@@ -3649,9 +3649,6 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
             bool high_temp_need_wrapping = cur_plate->check_high_temp_need_wrapping_detection(full_config_temp, get_high_temp_wrapping_warning_text());
             _set_warning_notification(EWarning::HighTempNeedWrappingDetection, high_temp_need_wrapping);
 
-            bool has_high_shrinkage = cur_plate->check_high_shrinkage_filament(full_config_temp, get_high_shrinkage_warning_text());
-            _set_warning_notification(EWarning::HighShrinkageFilament, has_high_shrinkage);
-
             bool single_extruder_mixed_risk = cur_plate->check_single_extruder_mixed_filament_risk(full_config_temp, get_single_extruder_mixed_filament_warning_text());
             _set_warning_notification(EWarning::SingleExtruderMixedFilament, single_extruder_mixed_risk);
         }
