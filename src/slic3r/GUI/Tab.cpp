@@ -7279,6 +7279,9 @@ bool TabPrinter::apply_extruder_cnt_from_cache()
 }
 
 bool TabPrinter::should_keep_config() const {
+    // disable this temporarily for a hot fix due to a bug
+    return false;
+
     const auto *old_printer = m_preset_bundle->printers.find_preset(m_last_base_preset_name);
     const auto &cur_printer     = m_preset_bundle->printers.get_selected_preset();
 
