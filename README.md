@@ -1,53 +1,80 @@
-![image](https://user-images.githubusercontent.com/106916061/179006347-497d24c0-9bd6-45b7-8c49-d5cc8ecfe5d7.png)
-# BambuStudio
-Bambu Studio is a cutting-edge, feature-rich slicing software.  
-It contains project-based workflows, systematically optimized slicing algorithms, and an easy-to-use graphic interface, bringing users an incredibly smooth printing experience.
+# BambuSlicerKeySaver
 
-Prebuilt Windows, macOS 64-bit and Linux releases are available through the [github releases page](https://github.com/bambulab/BambuStudio/releases/).
+A fork of [BambuStudio](https://github.com/bambulab/BambuStudio) (pinned at
+`v02.07.01.57`) whose sole purpose is to **save the slicer signing key one
+time** to disk.
 
-Bambu Studio is based on [PrusaSlicer](https://github.com/prusa3d/PrusaSlicer) by Prusa Research, which is from [Slic3r](https://github.com/Slic3r/Slic3r) by Alessandro Ranellucci and the RepRap community.
+## Why
 
-See the [wiki](https://github.com/bambulab/BambuStudio/wiki) and the [documentation directory](https://github.com/bambulab/BambuStudio/tree/master/doc) for more information.
+BambuStudio derives its per-request signing material on the fly through a very
+expensive code path that runs on every cloud/print operation. Doing that work
+once and caching the resulting key:
 
-# What are Bambu Studio's main features?
-Key features are:
-- Basic slicing features & GCode viewer
-- Multiple plates management
-- Remote control & monitoring
-- Auto-arrange objects
-- Auto-orient objects
-- Hybrid/Tree/Normal support types, Customized support
-- multi-material printing and rich painting tools
-- multi-platform (Win/Mac/Linux) support
-- Global/Object/Part level slicing parameters
+- **Saves CPU.** The normal derivation path is costly; a one-shot key save
+  replaces it with a cheap read of a saved `.pem`.
+- **Enables AGPL compliance and interoperability.** With the key available as a
+  plain file, open-source tooling can interoperate with Bambu services without
+  re-implementing or hiding the proprietary derivation, keeping the stack
+  inspectable and AGPL-friendly.
 
-Other major features are:
-- Advanced cooling logic controlling fan speed and dynamic print speed
-- Auto brim according to mechanical analysis
-- Support arc path(G2/G3)
-- Support STEP format
-- Assembly & explosion view
-- Flushing transition-filament into infill/object during filament change
+## What this is
 
-# How to compile
-Following platforms are currently supported to compile:
-- Windows 64-bit, [Compile Guide](https://github.com/bambulab/BambuStudio/wiki/Windows-Compile-Guide)
-- Mac 64-bit, [Compile Guide](https://github.com/bambulab/BambuStudio/wiki/Mac-Compile-Guide)
-- Linux, [Compile Guide](https://github.com/bambulab/BambuStudio/wiki/Linux-Compile-Guide)
-  - currently we only provide linux appimages on [github releases](https://github.com/bambulab/BambuStudio/releases) for Ubuntu/Fedora, and a [flathub version](https://flathub.org/apps/com.bambulab.BambuStudio) can be used for all the linux platforms
+This repository is not the full slicer. It is the minimal **`bambu_slicer_key_saver`**
+application: a self-contained key saver that loads the stock networking plugin,
+drives it once, captures the RSA-CRT components, and reconstructs the slicer's
+full private key. The only file retained from upstream BambuStudio is the
+bundled slicer certificate at `resources/cert/slicer_base64.cer`, which the key
+saver reads at its original location.
 
-# Report issue
-You can add an issue to the [github tracker](https://github.com/bambulab/BambuStudio/issues) if **it isn't already present.**
+The key is **fully self-recovered**: the public modulus is reconstructed as
+`N = p·q` from the captured factors, so nothing is hardcoded and the tool is not
+tied to any version-specific modulus constant. (Pass `--modulus` to supply a
+known modulus as an optional cross-check.)
 
-# License
-Bambu Studio is licensed under the GNU Affero General Public License, version 3. Bambu Studio is based on PrusaSlicer by PrusaResearch.
+By default the key is written to the operating system's BambuStudio user config
+directory as `slicer_key.pem` — a PKCS#1 RSA private key — alongside
+`slicer_pubkey.pem` (on Linux, `$XDG_CONFIG_HOME/BambuStudio` or
+`~/.config/BambuStudio`). Override the destination with `--out PATH`.
 
-PrusaSlicer is licensed under the GNU Affero General Public License, version 3. PrusaSlicer is owned by Prusa Research. PrusaSlicer is originally based on Slic3r by Alessandro Ranellucci.
+## Layout
 
-Slic3r is licensed under the GNU Affero General Public License, version 3. Slic3r was created by Alessandro Ranellucci with the help of many other contributors.
+```
+run.sh                     one-shot build + key-save helper
+resources/cert/            slicer_base64.cer (kept from BambuStudio, unchanged)
+src/                       the key saver application
+  Makefile                 builds src/bambu_slicer_key_saver
+  main.cpp, daemon.cpp …   key saver core
+  vendored/                vendored BigInt / MQTT helpers
+  shims/                   runtime shims (watchdog defeat)
+  daemon/CMakeLists.txt    builds the embedded headless bambu-daemon
+  bambu/                   Slic3r::bambu net sources (BambuStudio src/bambu)
+```
 
-The GNU Affero General Public License, version 3 ensures that if you use any part of this software in any way (even behind a web server), your software must be released under the same license.
+## Platform support
 
-The bambu networking plugin is based on non-free libraries. It is optional to the Bambu Studio and provides extended networking functionalities for users.
-By default, after installing Bambu Studio without the networking plugin, you can initiate printing through the SD card after slicing is completed.
+⚠️ **Only Linux has been tested so far.** The build, the runtime shims, and the
+key-extraction path have only been exercised on Linux. The Windows and macOS
+config-directory locations are wired up but unverified — getting the key saver
+running on those platforms is expected to need further work.
 
+## Build & run (Linux)
+
+```bash
+./run.sh                 # installs deps, builds, saves the key to the config dir
+```
+
+or manually:
+
+```bash
+make -C src -j"$(nproc)"
+./src/bambu_slicer_key_saver               # writes <config dir>/slicer_key.pem
+./src/bambu_slicer_key_saver --out other.pem   # or choose an explicit path
+```
+
+The key saver locates `slicer_base64.cer` automatically (it looks under
+`resources/cert/` relative to the binary, then in standard BambuStudio install
+locations); pass `--cert /path/to/slicer_base64.cer` to override.
+
+## License
+
+Derived from BambuStudio, which is licensed under the GNU AGPL-3.0.
