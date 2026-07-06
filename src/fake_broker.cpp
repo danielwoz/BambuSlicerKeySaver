@@ -1,9 +1,14 @@
 #include "fake_broker.h"
-#include "connect_redirect_embed.h"  // connect_redirect_embed_so + _len
+#include "connect_redirect_embed.h"     // connect_redirect_embed_so + _len
+#include "watchdog_defeat_v2_embed.h"   // watchdog_defeat_v2_embed_so + _len
+#include "allow_ptrace_embed.h"         // allow_ptrace_embed_so + _len
+#include "rdtsc_fake_embed.h"           // rdtsc_fake_embed_so + _len
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -35,6 +40,27 @@ std::string write_connect_redirect_memfd(int* out_fd) {
     return std::string(path);
 }
 
+// Write an embedded shim to a REAL, recognisably-named temp file. Unlike
+// connect_redirect (memfd is fine), the v2/allow_ptrace shims self-identify by
+// their pathname in /proc/self/maps and re-inject into children by path, so a
+// memfd ("/memfd:... (deleted)") breaks them. Caller unlinks by path on stop().
+static std::string write_embedded_temp(const char* tag,
+                                       const unsigned char* data, size_t len) {
+    if (len == 0) return {};
+    char path[96];
+    snprintf(path, sizeof(path), "/tmp/%s.%d.so", tag, (int)getpid());
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    if (fd < 0) return {};
+    size_t total = 0;
+    while (total < len) {
+        ssize_t n = write(fd, data + total, len - total);
+        if (n <= 0) { close(fd); unlink(path); return {}; }
+        total += (size_t)n;
+    }
+    close(fd);
+    return std::string(path);
+}
+
 // ---------------------------------------------------------------------------
 // FakePrinterBroker implementation
 // ---------------------------------------------------------------------------
@@ -46,6 +72,15 @@ bool FakePrinterBroker::start(const std::string& target_dev_id) {
     connect_redirect_so_path = write_connect_redirect_memfd(&connect_redirect_fd);
     if (connect_redirect_so_path.empty())
         LOG_W("connect_redirect shim unavailable (stub embed?) — TLS may fail");
+
+    rdtsc_so_path        = write_embedded_temp("rdtsc_fake",
+        rdtsc_fake_embed_so, rdtsc_fake_embed_so_len);
+    watchdog_v2_so_path  = write_embedded_temp("watchdog_defeat_v2",
+        watchdog_defeat_v2_embed_so, watchdog_defeat_v2_embed_so_len);
+    allow_ptrace_so_path = write_embedded_temp("allow_ptrace",
+        allow_ptrace_embed_so, allow_ptrace_embed_so_len);
+    if (watchdog_v2_so_path.empty() || allow_ptrace_so_path.empty())
+        LOG_W("watchdog/allow_ptrace shim unavailable — newer plugins may abort");
 
     if (!try_bind(8883)) {
         int free_port = find_free_port();
@@ -73,6 +108,10 @@ void FakePrinterBroker::stop() {
     if (connect_redirect_fd >= 0) {
         close(connect_redirect_fd);
         connect_redirect_fd = -1;
+    }
+    for (std::string* p : {&watchdog_v2_so_path, &allow_ptrace_so_path, &rdtsc_so_path}) {
+        if (!p->empty() && p->rfind("/tmp/", 0) == 0) unlink(p->c_str());
+        p->clear();
     }
 }
 

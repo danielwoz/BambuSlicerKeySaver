@@ -5,6 +5,9 @@
 // Globals set by main(), used in daemon grandchild and setup_h2s_home.
 // Defined in daemon.cpp.
 extern std::string g_connect_redirect_so_path;
+extern std::string g_watchdog_v2_so_path;
+extern std::string g_allow_ptrace_so_path;
+extern std::string g_rdtsc_so_path;
 extern int g_fake_printer_port;
 extern std::string g_plugin_path_for_home;
 

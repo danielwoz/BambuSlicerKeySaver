@@ -2,11 +2,22 @@
 daemon_embed.h
 connect_redirect_embed.h
 watchdog_defeat_embed.h
+watchdog_defeat_v2_embed.h
+allow_ptrace_embed.h
+rdtsc_fake_embed.h
 build/
 
 # Compiled binaries
 bambu_slicer_key_saver
 bambu_slicer_key_saver_cov
+bambu_conf_decrypt
 
-# Proprietary saved key data — never commit
+# Recovered secrets / user data — never commit
 slicer_cert_embed.h
+slicer_key.pem
+slicer_pubkey.pem
+network_engine.key
+network_engine_conf*.json
+
+# plugin runtime debug logs
+log/

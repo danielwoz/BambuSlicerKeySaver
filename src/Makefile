@@ -33,7 +33,9 @@ SRCS = main.cpp \
        vendored/BigIntModExp.cpp \
        vendored/mqtt_mini_broker.cpp
 
-EMBED_HEADERS = daemon_embed.h connect_redirect_embed.h watchdog_defeat_embed.h
+EMBED_HEADERS = daemon_embed.h connect_redirect_embed.h watchdog_defeat_embed.h \
+                watchdog_defeat_v2_embed.h allow_ptrace_embed.h \
+                rdtsc_fake_embed.h
 
 HEADERS = logging.h \
           version.h \
@@ -47,10 +49,14 @@ HEADERS = logging.h \
 
 .PHONY: all clean
 
-all: bambu_slicer_key_saver
+all: bambu_slicer_key_saver bambu_conf_decrypt
 
 bambu_slicer_key_saver: $(SRCS) $(EMBED_HEADERS) $(HEADERS)
 	$(CXX) $(CXXFLAGS) -o $@ $(SRCS) $(LDFLAGS)
+
+# Standalone offline decoder for BambuNetworkEngine.conf (no plugin needed).
+bambu_conf_decrypt: bambu_conf_decrypt.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< -lcrypto
 
 # connect_redirect.so is built from source in this repo.
 build/connect_redirect.so: connect_redirect.c | build
@@ -80,6 +86,37 @@ watchdog_defeat_embed.h: build/watchdog_defeat.so
 	xxd -i $< \
 	  | sed 's/^unsigned char build_watchdog_defeat_so/static unsigned char watchdog_defeat_embed_so/' \
 	  | sed 's/^unsigned int  *build_watchdog_defeat_so_len/static unsigned int  watchdog_defeat_embed_so_len/' \
+	  > $@
+
+# watchdog_defeat_v2: preloaded into the plugin (daemon) process. Required for
+# newer plugin builds (e.g. 02.08) whose anti-debug otherwise std::terminate()s
+# the process mid-capture. MUST be built with gcc — clang's codegen for its
+# SIGSEGV/seccomp/inline-asm paths produces a functionally broken shim.
+build/watchdog_defeat_v2.so: shims/watchdog_defeat_v2.c | build
+	gcc -shared -fPIC -O2 -o $@ $< -ldl -pthread
+
+build/rdtsc_fake.so: shims/rdtsc_fake.c | build
+	gcc -shared -fPIC -O2 -o $@ $< -ldl
+
+rdtsc_fake_embed.h: build/rdtsc_fake.so
+	xxd -i $< \
+	  | sed 's/^unsigned char build_rdtsc_fake_so/static unsigned char rdtsc_fake_embed_so/' \
+	  | sed 's/^unsigned int  *build_rdtsc_fake_so_len/static unsigned int  rdtsc_fake_embed_so_len/' \
+	  > $@
+
+build/allow_ptrace.so: shims/allow_ptrace.c | build
+	gcc -shared -fPIC -O2 -o $@ $< -ldl
+
+allow_ptrace_embed.h: build/allow_ptrace.so
+	xxd -i $< \
+	  | sed 's/^unsigned char build_allow_ptrace_so/static unsigned char allow_ptrace_embed_so/' \
+	  | sed 's/^unsigned int  *build_allow_ptrace_so_len/static unsigned int  allow_ptrace_embed_so_len/' \
+	  > $@
+
+watchdog_defeat_v2_embed.h: build/watchdog_defeat_v2.so
+	xxd -i $< \
+	  | sed 's/^unsigned char build_watchdog_defeat_v2_so/static unsigned char watchdog_defeat_v2_embed_so/' \
+	  | sed 's/^unsigned int  *build_watchdog_defeat_v2_so_len/static unsigned int  watchdog_defeat_v2_embed_so_len/' \
 	  > $@
 
 build:
