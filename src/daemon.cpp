@@ -20,6 +20,9 @@
 
 // Globals defined here, declared extern in daemon.h.
 std::string g_connect_redirect_so_path;
+std::string g_watchdog_v2_so_path;
+std::string g_allow_ptrace_so_path;
+std::string g_rdtsc_so_path;
 int g_fake_printer_port = 0;
 std::string g_plugin_path_for_home;
 
@@ -561,13 +564,22 @@ pid_t launch_daemon(const std::string& daemon_exe,
     }
 
     {
-        const char* ap  = "/mnt/cephfs/ssd/slicer-key-saver/bin/allow_ptrace.so";
-        const char* wd  = "/mnt/cephfs/ssd/slicer-key-saver/bin/watchdog_defeat_v2.so";
-        struct stat st{};
+        // Preload into the plugin process: connect-redirect (fake broker) +
+        // watchdog_defeat_v2 (defeats the plugin's anti-debug — required for
+        // newer builds like 02.08 that otherwise abort mid-capture). Both are
+        // embedded in this binary and written to inheritable memfds; no external
+        // files are needed. WD_V2_* env below configures the watchdog shim.
         std::string preload;
-        if (!g_connect_redirect_so_path.empty()) preload = g_connect_redirect_so_path;
-        if (stat(ap, &st) == 0) { if (!preload.empty()) preload += ":"; preload += ap; }
-        if (stat(wd, &st) == 0) { if (!preload.empty()) preload += ":"; preload += wd; }
+        auto add = [&](const std::string& p) {
+            if (p.empty()) return;
+            if (!preload.empty()) preload += ":";
+            preload += p;
+            std::fprintf(stderr, "[daemon-child] preload shim: %s\n", p.c_str());
+        };
+        add(g_connect_redirect_so_path);
+        add(g_rdtsc_so_path);          // rdtsc_fake first — neutralise timing checks
+        add(g_allow_ptrace_so_path);
+        add(g_watchdog_v2_so_path);
         if (!preload.empty()) setenv("LD_PRELOAD", preload.c_str(), 1);
     }
     if (g_fake_printer_port > 0) {

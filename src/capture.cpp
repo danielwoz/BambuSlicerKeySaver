@@ -1,4 +1,7 @@
 #include "capture.h"
+#include "conf_oracle.h"          // kOraclePlain[] + kOracleCipher[] (no key)
+#define OPENSSL_SUPPRESS_DEPRECATED
+#include <openssl/aes.h>
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -166,6 +169,101 @@ static bool read_tracee_mem(pid_t pid, uint64_t va, void* dst, size_t n) {
     return got == (ssize_t)n;
 }
 
+// Scan the tracee's readable memory for two things:
+//  (1) the decrypted BambuNetworkEngine.conf plaintext (printable JSON), and
+//  (2) the fixed AES key that decrypts it — recovered at runtime (never
+//      hardcoded) via a known fake plaintext/ciphertext oracle (conf_oracle.h):
+//      the key K is the memory window for which AES-ECB-decrypt(kOracleCipher)
+//      == kOraclePlain. A known plaintext/ciphertext pair cannot reveal K, so
+//      the oracle is safe to embed/distribute.
+static std::vector<std::string> scan_for_conf_json(pid_t pid,
+                                                   std::vector<uint8_t>& out_key) {
+    std::vector<std::string> hits;
+    char mpath[64];
+    std::snprintf(mpath, sizeof(mpath), "/proc/%d/maps", (int)pid);
+    std::ifstream f(mpath);
+    if (!f) return hits;
+
+    std::vector<std::pair<uint64_t, uint64_t>> regions;
+    std::string line;
+    while (std::getline(f, line)) {
+        size_t dash = line.find('-');
+        size_t sp   = line.find(' ');
+        size_t sp2  = line.find(' ', sp + 1);
+        if (dash == std::string::npos || sp == std::string::npos || sp2 == std::string::npos)
+            continue;
+        std::string perms = line.substr(sp + 1, sp2 - sp - 1);
+        if (perms.size() < 4 || perms[0] != 'r') continue;  // any readable region
+        uint64_t lo = std::stoull(line.substr(0, dash), nullptr, 16);
+        uint64_t hi = std::stoull(line.substr(dash + 1, sp - dash - 1), nullptr, 16);
+        if (hi <= lo || (hi - lo) > (64ull << 20)) continue;  // skip empty / >64MB
+        regions.push_back({lo, hi});
+    }
+
+    // Optional raw dump of the scanned rw regions (for offline AES-key search).
+    const char* dump_path = std::getenv("BBL_DUMP_MEM");
+    FILE* dump_fp = dump_path ? std::fopen(dump_path, "wb") : nullptr;
+
+    std::vector<uint8_t> buf;
+    for (auto& reg : regions) {
+        uint64_t lo = reg.first, hi = reg.second;
+        size_t rn = (size_t)(hi - lo);
+        buf.assign(rn, 0);
+        for (uint64_t cur = lo; cur < hi; cur += 4096) {
+            size_t want = std::min<uint64_t>(4096, hi - cur);
+            (void)read_tracee_mem(pid, cur, buf.data() + (cur - lo), want);  // gaps stay 0
+        }
+        if (dump_fp) std::fwrite(buf.data(), 1, rn, dump_fp);
+
+        // AES-key recovery: find the window K whose inverse schedule maps the
+        // oracle ciphertext block back to the oracle plaintext block.
+        if (out_key.empty() && rn >= 16) {
+            static const int klens[2] = {16, 32};
+            unsigned char dec[16];
+            for (size_t o = 0; o + 16 <= rn && out_key.empty(); o += 4) {
+                for (int ki = 0; ki < 2; ++ki) {
+                    int kl = klens[ki];
+                    if (o + (size_t)kl > rn) continue;
+                    AES_KEY dk;
+                    if (AES_set_decrypt_key(buf.data() + o, kl * 8, &dk) != 0) continue;
+                    AES_decrypt(kOracleCipher, dec, &dk);
+                    if (std::memcmp(dec, kOraclePlain, 16) == 0) {
+                        out_key.assign(buf.data() + o, buf.data() + o + kl);
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (size_t i = 0; i < rn; ++i) {
+            if (buf[i] != '{') continue;
+            int depth = 0; size_t j = i; bool printable = true;
+            for (; j < rn && j < i + 8192; ++j) {
+                uint8_t c = buf[j];
+                if (c == '{') ++depth;
+                else if (c == '}') { if (--depth == 0) { ++j; break; } }
+                else if (!(c == 0x09 || c == 0x0a || c == 0x0d || (c >= 0x20 && c <= 0x7e))) {
+                    printable = false; break;
+                }
+            }
+            if (!printable || depth != 0 || j - i < 40) continue;
+            if (j - i < 200) continue;  // the conf is ~700 bytes; skip fragments
+            std::string s((const char*)buf.data() + i, j - i);
+            // Only keep blobs that look like the network-engine conf itself.
+            if (s.find("user_id") != std::string::npos ||
+                s.find("refresh_token") != std::string::npos) {
+                hits.push_back(std::move(s)); i = j;
+            }
+            if (hits.size() > 16) break;
+        }
+        if (hits.size() > 64) break;
+    }
+    if (dump_fp) std::fclose(dump_fp);
+    std::sort(hits.begin(), hits.end());
+    hits.erase(std::unique(hits.begin(), hits.end()), hits.end());
+    return hits;
+}
+
 
 // Scan memory for the byte_load+accumulator pair.
 static uint64_t discover_accumulator_pc(pid_t child, uint64_t lo, uint64_t hi,
@@ -286,8 +384,23 @@ static uint64_t discover_accumulator_pc(pid_t child, uint64_t lo, uint64_t hi,
     if (cands.empty()) return 0;
 
     Cand best{}; bool have = false;
+    // Manual override takes top precedence (for probing new plugin versions).
+    if (const char* env_idx0 = std::getenv("BBL_CAND_IDX")) {
+        int idx = std::atoi(env_idx0);
+        if (idx >= 0 && (size_t)idx < cands.size()) {
+            best = cands[idx]; have = true;
+            LOG_I("[discover] BBL_CAND_IDX=%d forced: conv=%s bl@0x%lx ac@0x%lx dist=%d",
+                  idx, CONVS[best.conv].name, (unsigned long)best.va_bl,
+                  (unsigned long)best.va_ac, best.dist);
+        }
+    }
+    // Primary: the edx<-[rcx] modexp idiom. The byte_load->accumulator distance
+    // is ~46 on <=02.07 builds and 34 on 02.08 (differently compiled), so the
+    // window is [30,60]. Verified this still selects the same site on older
+    // builds (their first match is dist~46 either way).
     for (auto& c : cands) {
-        if (c.conv == 0 && c.dist >= 40 && c.dist <= 60) {
+        if (have) break;
+        if (c.conv == 0 && c.dist >= 30 && c.dist <= 60) {
             best = c; have = true; break;
         }
     }
@@ -664,6 +777,14 @@ CaptureResult drive_capture_attach(pid_t target,
               (M.arena2_hi - M.arena2_lo) / (1024.0 * 1024.0));
     }
 
+    // Recover the conf AES key + plaintext NOW, while the plugin is guaranteed
+    // alive. Some plugin versions abort mid-capture (e.g. 02.08 std::terminate),
+    // so this must not depend on the fragile sign capture succeeding.
+    R.conf_candidates = scan_for_conf_json(target, R.conf_key);
+    if (!R.conf_key.empty())
+        LOG_I("[conf] recovered %d-bit conf AES key from plugin memory (early)",
+              (int)R.conf_key.size() * 8);
+
     uint64_t acc_va = 0;
     int acc_conv = 0;
     if (const char* env_acc = std::getenv("BBL_ACC_VA")) {
@@ -870,6 +991,19 @@ CaptureResult drive_capture_attach(pid_t target,
     }
     if (sentinel_count > 0) {
         LOG_I("[attach] un-parked %d sentinel thread(s)", sentinel_count);
+    }
+
+    // While still SEIZED, scan the plugin's heap for the decrypted
+    // BambuNetworkEngine.conf plaintext (process_vm_readv works whether or not
+    // the threads are trap-stopped).
+    // Fallback: only re-scan at the end if the early scan came up empty and the
+    // process is still alive.
+    if (R.conf_key.empty()) {
+        auto late = scan_for_conf_json(target, R.conf_key);
+        if (!late.empty()) R.conf_candidates = std::move(late);
+        if (!R.conf_key.empty())
+            LOG_I("[conf] recovered %d-bit conf AES key from plugin memory (late)",
+                  (int)R.conf_key.size() * 8);
     }
 
     stop_notif_thread();

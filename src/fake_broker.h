@@ -21,6 +21,10 @@ struct FakePrinterBroker {
     bool        cert_sent    = false;
     std::string connect_redirect_so_path;
     int         connect_redirect_fd = -1;
+    std::string watchdog_v2_so_path;
+    int         watchdog_v2_fd = -1;
+    std::string allow_ptrace_so_path;
+    std::string rdtsc_so_path;
     std::mutex  mu;
     std::condition_variable cv;
     std::thread  thr;

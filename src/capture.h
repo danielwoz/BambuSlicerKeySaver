@@ -18,6 +18,12 @@ struct CaptureResult {
     std::vector<uint8_t> stream;
     int total_traps = 0;
     int sign_cycles = 0;  // 256-byte chunks observed
+    // Decrypted BambuNetworkEngine.conf JSON blob(s) recovered from the
+    // plugin's writable memory while attached (see scan_for_conf_json).
+    std::vector<std::string> conf_candidates;
+    // The fixed AES key that decrypts BambuNetworkEngine.conf, recovered from
+    // plugin memory at runtime (empty if not found). Never hardcoded.
+    std::vector<uint8_t> conf_key;
 };
 
 // Memory map info for the plugin .so.

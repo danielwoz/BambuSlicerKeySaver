@@ -348,6 +348,9 @@ int main(int argc, char** argv) {
         return 4;
     }
     g_connect_redirect_so_path = fake_broker.connect_redirect_so_path;
+    g_watchdog_v2_so_path      = fake_broker.watchdog_v2_so_path;
+    g_allow_ptrace_so_path     = fake_broker.allow_ptrace_so_path;
+    g_rdtsc_so_path            = fake_broker.rdtsc_so_path;
     g_fake_printer_port = fake_broker.port;
 
     // ---- Write daemon binary to memfd ----
@@ -507,6 +510,43 @@ int main(int argc, char** argv) {
     bool require_bytes = true;
     CaptureResult cap = drive_capture_attach(target_pid, args.plugin_path,
                                              args.timeout_s, require_bytes, ver);
+
+    // Write any recovered BambuNetworkEngine.conf plaintext candidates next to
+    // the key output (independent of whether the RSA capture succeeded).
+    if (!cap.conf_candidates.empty()) {
+        std::string dir = args.out_path;
+        auto sl = dir.rfind('/');
+        dir = (sl == std::string::npos) ? std::string(".") : dir.substr(0, sl);
+        ensure_parent_dir(args.out_path);
+        for (size_t i = 0; i < cap.conf_candidates.size(); ++i) {
+            std::string p = dir + "/network_engine_conf_" + std::to_string(i) + ".json";
+            int fd = open(p.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (fd >= 0) {
+                (void)!write(fd, cap.conf_candidates[i].data(), cap.conf_candidates[i].size());
+                close(fd);
+                LOG_I("network-engine conf candidate: %s (%zu bytes)",
+                      p.c_str(), cap.conf_candidates[i].size());
+            }
+        }
+    }
+
+    // Write the recovered conf AES key (independent of the RSA capture outcome).
+    if (!cap.conf_key.empty()) {
+        std::string kp = args.out_path;
+        auto sl = kp.rfind('/');
+        kp = (sl == std::string::npos ? std::string(".") : kp.substr(0, sl))
+             + "/network_engine.key";
+        ensure_parent_dir(args.out_path);
+        int kfd = open(kp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (kfd >= 0) {
+            (void)!write(kfd, cap.conf_key.data(), cap.conf_key.size());
+            close(kfd);
+            LOG_I("network-engine conf key (%zu-bit) written: %s",
+                  cap.conf_key.size() * 8, kp.c_str());
+        }
+    } else {
+        LOG_W("network-engine conf key not recovered from plugin memory");
+    }
 
     // Shut down daemon.
     LOG_I("shutting down daemon...");
