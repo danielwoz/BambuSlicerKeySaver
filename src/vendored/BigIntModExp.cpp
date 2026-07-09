@@ -26,7 +26,41 @@ namespace bambu_signing {
 namespace {
 
 using u64 = std::uint64_t;
+
+#if defined(_MSC_VER) && !defined(__clang__)
+// MSVC (cl.exe) has no native __int128. Provide a minimal 128-bit unsigned
+// shim supporting exactly the operations this file performs:
+//   (u128)u64 * u64,  u128 +/- u64,  >> 64,  & u64,  truncation to u64.
+// The left operand of '*' is always a freshly-widened u64, so its high half
+// is zero — _umul128 yields the full 64x64 product.
+#include <intrin.h>
+struct u128 {
+    u64 lo = 0, hi = 0;
+    u128() = default;
+    u128(u64 l) : lo(l), hi(0) {}
+    u128(u64 h, u64 l) : lo(l), hi(h) {}
+    explicit operator u64() const { return lo; }
+};
+inline u128 operator*(u128 a, u64 b) {            // assumes a.hi == 0
+    u128 r; r.lo = _umul128(a.lo, b, &r.hi); return r;
+}
+inline u128 operator+(u128 a, u64 b) {
+    u128 r; r.lo = a.lo + b; r.hi = a.hi + (r.lo < b ? 1u : 0u); return r;
+}
+inline u128 operator-(u128 a, u64 b) {
+    u128 r; r.lo = a.lo - b; r.hi = a.hi - (a.lo < b ? 1u : 0u); return r;
+}
+inline u128 operator>>(u128 a, int sh) {
+    u128 r;
+    if (sh == 0)       { r = a; }
+    else if (sh < 64)  { r.lo = (a.lo >> sh) | (a.hi << (64 - sh)); r.hi = a.hi >> sh; }
+    else               { r.lo = a.hi >> (sh - 64); r.hi = 0; }
+    return r;
+}
+inline u64 operator&(u128 a, u64 b) { return a.lo & b; }
+#else
 using u128 = unsigned __int128;
+#endif
 
 // 2048 bits / 64 = 32 limbs.
 constexpr std::size_t kLimbs = 32;

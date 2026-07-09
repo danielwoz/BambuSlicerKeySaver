@@ -49,6 +49,16 @@ public:
     virtual int subscribe_device  (const std::string& dev_id);
     virtual int unsubscribe_device(const std::string& dev_id);
 
+    // Cloud MQTT session control. start_subscribe("app") brings up the cloud
+    // MQTT connection the plugin uses to publish (and SIGN) device commands;
+    // without it, send_message returns CONNECT_FAILED. refresh_connection
+    // re-establishes a dropped session. raw_is_server_connected() reports the
+    // plugin's own view (not the host override).
+    virtual int  start_subscribe(const std::string& module);
+    virtual int  stop_subscribe (const std::string& module);
+    virtual int  refresh_connection();
+    virtual bool raw_is_server_connected() const;
+
     virtual int publish_to_device(const std::string& dev_id,
                                   const std::string& json_payload,
                                   int                qos);
