@@ -18,6 +18,28 @@ slicer_key.pem
 slicer_pubkey.pem
 network_engine.key
 network_engine_conf*.json
+*slicer_key*
+d_extracted.json
+capture_selftest_key.txt
+slicer_cert_id.txt
+printer_trust/
+
+# Decrypted/plaintext cloud config containing user tokens — never commit
+/BambuNetworkEngine.conf
 
 # plugin runtime debug logs
 log/
+
+# --- Windows port (win/) ---
+# Build/output trees
+win/build/
+win/build2/
+win/build_main/
+win/**/build/
+# Proprietary Bambu plugin binaries and bundled runtime — never commit
+win/plugin_versions/
+win/broker/*.exe
+win/broker/*.dll
+
+# Editor / session scratch
+.claude/

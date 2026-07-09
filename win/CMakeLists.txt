@@ -1,0 +1,84 @@
+cmake_minimum_required(VERSION 3.20)
+project(bambu_keysaver_win CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Default to an optimized build; the factor-recovery search is compute-heavy.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+if(MSVC)
+  add_compile_options(/EHsc /W3)
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
+endif()
+
+set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+
+# ---------------------------------------------------------------------------
+# keysaver_core: the OS-independent key-recovery core, compiled under MSVC.
+# Reconstruction needs no third-party libraries.
+# ---------------------------------------------------------------------------
+add_library(keysaver_core STATIC
+  ${SRC}/reconstruct.cpp
+  ${SRC}/bigint.cpp
+  ${SRC}/envelope.cpp
+  ${SRC}/version.cpp
+  ${SRC}/vendored/BigIntModExp.cpp
+)
+target_include_directories(keysaver_core PUBLIC ${SRC})
+
+# NOTE: output.cpp (PEM writing) is intentionally NOT compiled here — it needs
+# OpenSSL and pulls POSIX logging. The pipeline emits the recovered key as hex
+# components (self-validated); convert to PEM with the openssl CLI if desired.
+
+# ---------------------------------------------------------------------------
+# Phase 0 verification: round-trip a synthetic RSA-2048 key through the core.
+# ---------------------------------------------------------------------------
+add_executable(core_selftest core_selftest.cpp)
+target_link_libraries(core_selftest PRIVATE keysaver_core)
+
+# ---------------------------------------------------------------------------
+# Phase 1: minimal loader host + verification-faking shim (Windows only).
+# ---------------------------------------------------------------------------
+if(WIN32)
+  include(FetchContent)
+  FetchContent_Declare(
+    minhook
+    GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git
+    GIT_TAG        master
+  )
+  FetchContent_MakeAvailable(minhook)
+
+  add_library(verify_fake STATIC shim/verify_fake.cpp)
+  target_include_directories(verify_fake PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(verify_fake PUBLIC minhook crypt32 wintrust)
+
+  add_executable(bambu_host
+    host/main.cpp
+    host/known_scan.cpp
+    host/plugin_fetch.cpp
+    host/logkey.cpp
+    host/verdict_flip.cpp
+    host/cloud_tap.cpp
+    host/app_key_sweep.cpp
+    host/death_diag.cpp
+    ${SRC}/bambu/BambuNetworkingPluginHandle.cpp)
+  target_include_directories(bambu_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${SRC})
+  target_link_libraries(bambu_host PRIVATE verify_fake keysaver_core ws2_32 psapi bcrypt ncrypt)
+
+  # Standalone AES-128-ECB decoder for the plugin's debug_network_*.log.enc
+  # numeric log. Own main().
+  add_executable(declog host/declog.cpp)
+  target_link_libraries(declog PRIVATE bcrypt)
+
+  # ---------------------------------------------------------------------------
+  # app_key_selftest: OFFLINE round-trip for app_key_sweep -- recover p,q from
+  # raw memory buffers given a caller-supplied RSA-2048 modulus (the cloud "app
+  # key"). Synthetic key, no plugin. Own main(). Separate from bambu_host so its
+  # source list never touches the live-capture host target.
+  add_executable(app_key_selftest host/app_key_sweep.cpp host/app_key_selftest.cpp)
+  target_include_directories(app_key_selftest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${SRC})
+  target_link_libraries(app_key_selftest PRIVATE keysaver_core)
+endif()
