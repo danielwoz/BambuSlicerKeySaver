@@ -62,6 +62,8 @@ if(WIN32)
     host/logkey.cpp
     host/verdict_flip.cpp
     host/cloud_tap.cpp
+    host/rng_tap.cpp
+    host/aes_tap.cpp
     host/app_key_sweep.cpp
     host/death_diag.cpp
     ${SRC}/bambu/BambuNetworkingPluginHandle.cpp)

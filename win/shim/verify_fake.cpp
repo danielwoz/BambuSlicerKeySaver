@@ -653,7 +653,11 @@ void install_verify_fake() {
     }
 #endif
 
-    if (MH_Initialize() != MH_OK) { logf("MH_Initialize failed"); return; }
+    // MinHook may already be initialised by another component (death_diag installs
+    // its exit hooks first). ALREADY_INITIALIZED is fine -- our hooks still create.
+    // Bailing here silently disabled ALL the anti-debug/DR-scrubbing hooks below.
+    { MH_STATUS s_ = MH_Initialize();
+      if (s_ != MH_OK && s_ != MH_ERROR_ALREADY_INITIALIZED) { logf("MH_Initialize failed (%d)", (int)s_); return; } }
 
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
     HMODULE c32 = GetModuleHandleW(L"crypt32.dll");
