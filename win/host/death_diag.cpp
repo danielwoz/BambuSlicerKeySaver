@@ -52,14 +52,25 @@ bool frame_in_mod(void* addr, HMODULE mod) {
 // Detect a plugin-originated exit: it carries plugin/studio frames on its stack,
 // whereas the host's own exit (main returns) does not. Robust to our death_diag
 // hook frames (in bambu_host.exe) also being present.
+bool g_park_all = false;   // BBL_PARK_ALL=1: park EVERY self-exit (capture mode)
+
+// True if any return-address frame lives in the plugin or in bambu-studio.exe.
+// Resolve per-frame by ADDRESS (GetModuleHandleEx FROM_ADDRESS) rather than by
+// name: bambu-studio.exe is mapped in a way GetModuleHandleA("bambu-studio.exe")
+// misses, so the name check silently failed and the exit was never parked.
 bool exit_is_watchdog() {
-    HMODULE plugin = GetModuleHandleA("bambu_networking.dll");
-    HMODULE studio = GetModuleHandleA("bambu-studio.exe");
-    if (!plugin && !studio) return false;
     void* frames[40];
     USHORT n = CaptureStackBackTrace(0, 40, frames, nullptr);
-    for (USHORT i = 0; i < n; ++i)
-        if (frame_in_mod(frames[i], plugin) || frame_in_mod(frames[i], studio)) return true;
+    for (USHORT i = 0; i < n; ++i) {
+        HMODULE h = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)frames[i], &h) && h) {
+            char nm[MAX_PATH] = {0};
+            GetModuleBaseNameA(GetCurrentProcess(), h, nm, sizeof nm);
+            if (_stricmp(nm, "bambu_networking.dll") == 0 ||
+                _strnicmp(nm, "bambu-studio", 12) == 0) return true;
+        }
+    }
     return false;
 }
 
@@ -191,7 +202,7 @@ BOOL WINAPI hk_TerminateProcess(HANDLE h, UINT code) {
     bool self = (h == GetCurrentProcess() || h == (HANDLE)-1);
     if (self) {
         log_exit("TerminateProcess", _ReturnAddress(), code);
-        if (g_block && exit_is_watchdog()) park_watchdog("TerminateProcess");
+        if (g_park_all || (g_block && exit_is_watchdog())) park_watchdog("TerminateProcess");
     }
     return o_TerminateProcess(h, code);
 }
@@ -199,19 +210,35 @@ LONG NTAPI hk_NtTerminateProcess(HANDLE h, LONG status) {
     bool self = (h == GetCurrentProcess() || h == (HANDLE)-1);
     if (self) {
         log_exit("NtTerminateProcess", _ReturnAddress(), (unsigned long)status);
-        if (g_block && exit_is_watchdog()) park_watchdog("NtTerminateProcess");
+        if (g_park_all || (g_block && exit_is_watchdog())) park_watchdog("NtTerminateProcess");
     }
     return o_NtTerminateProcess(h, status);
 }
 VOID NTAPI hk_RtlExitUserProcess(ULONG status) {
     log_exit("RtlExitUserProcess", _ReturnAddress(), status);
-    if (exit_is_watchdog()) {
+    if (g_park_all || exit_is_watchdog()) {
         g_wd_start = thread_start_addr(GetCurrentThread());
         std::fprintf(stderr, "[death-diag] exiting thread Win32-start = %p\n", (void*)g_wd_start);
         std::fflush(stderr);
-        if (g_block) park_watchdog("RtlExitUserProcess");
+        if (g_block || g_park_all) park_watchdog("RtlExitUserProcess");
     }
     o_RtlExitUserProcess(status);
+}
+
+// ---- anti-anti-debug: hide our hardware breakpoints ------------------------
+// The plugin's networking library polls the debug registers and aborts ("a
+// debugger was found") if any are set -- which our DR execute-breakpoints trip.
+// User mode can observe DR0-7 ONLY through NtGetContextThread, so we hook it and
+// zero the debug-register fields in the reply. Our DR breakpoints are still LIVE
+// (they were programmed via SetThreadContext, which we do not touch), so captures
+// keep working while the plugin's check sees a clean context. Gated BBL_HIDE_DR=1.
+using NtGetContextThread_t = LONG (NTAPI*)(HANDLE, PCONTEXT);
+NtGetContextThread_t o_NtGetContextThread = nullptr;
+bool g_hide_dr = false;
+LONG NTAPI hk_NtGetContextThread(HANDLE th, PCONTEXT c) {
+    LONG r = o_NtGetContextThread(th, c);
+    if (g_hide_dr && r == 0 && c) { c->Dr0 = c->Dr1 = c->Dr2 = c->Dr3 = c->Dr6 = c->Dr7 = 0; }
+    return r;
 }
 
 // ---- proactive thread suppression -----------------------------------------
@@ -308,17 +335,20 @@ void start_watchdog_suppressor() {
 
 void install_exit_hooks() {
     char e[8]{}; g_block = (GetEnvironmentVariableA("BBL_BLOCK_WATCHDOG", e, sizeof e) && e[0] == '1');
+    char e2[8]{}; g_hide_dr = (GetEnvironmentVariableA("BBL_HIDE_DR", e2, sizeof e2) && e2[0] == '1');
+    char e3[8]{}; g_park_all = (GetEnvironmentVariableA("BBL_PARK_ALL", e3, sizeof e3) && e3[0] == '1');
     MH_Initialize();  // harmless if verify_fake already initialised it
     struct { const wchar_t* mod; const char* fn; void* det; void** orig; } hooks[] = {
         { L"kernel32.dll", "TerminateProcess",   (void*)hk_TerminateProcess,   (void**)&o_TerminateProcess },
         { L"ntdll.dll",    "NtTerminateProcess", (void*)hk_NtTerminateProcess, (void**)&o_NtTerminateProcess },
         { L"ntdll.dll",    "RtlExitUserProcess", (void*)hk_RtlExitUserProcess, (void**)&o_RtlExitUserProcess },
+        { L"ntdll.dll",    "NtGetContextThread", (void*)hk_NtGetContextThread, (void**)&o_NtGetContextThread },
     };
     int ok = 0;
     for (auto& h : hooks)
         if (MH_CreateHookApi(h.mod, h.fn, h.det, h.orig) == MH_OK) ++ok;
     MH_EnableHook(MH_ALL_HOOKS);
-    std::fprintf(stderr, "[death-diag] exit hooks: %d/3 armed\n", ok);
+    std::fprintf(stderr, "[death-diag] exit hooks: %d/4 armed (hide_dr=%d)\n", ok, (int)g_hide_dr);
 }
 
 }  // namespace

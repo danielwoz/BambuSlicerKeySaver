@@ -35,6 +35,8 @@
 #include "host/test_envelopes.h"
 #include "host/verdict_flip.hpp"
 #include "host/cloud_tap.hpp"
+#include "host/rng_tap.hpp"
+#include "host/aes_tap.hpp"
 #include "host/app_key_sweep.hpp"
 #include "host/death_diag.hpp"
 #include "reconstruct.h"
@@ -756,6 +758,19 @@ int main(int argc, char** argv) {
     if (has_flag(argc, argv, "--tap") || std::getenv("BBL_TAP_LOG")) {
         bbl::start_cloud_tap();
         std::atexit(bbl::stop_cloud_tap);
+    }
+    //     rng_tap: hook bcrypt!BCryptGenRandom (the plugin's sole RNG import) to
+    //     capture the client AES key + nonces used to build get_app_cert's
+    //     encAppKey/aes256 and the create_task signature. Gate on --rng-tap/BBL_RNG_LOG.
+    if (has_flag(argc, argv, "--rng-tap") || std::getenv("BBL_RNG_LOG")) {
+        bbl::start_rng_tap();
+        std::atexit(bbl::stop_rng_tap);
+    }
+    //     aes_tap: DR-breakpoint OpenSSL AES-NI key expansion to capture the raw AES
+    //     key K (DRBG-generated, so invisible to rng_tap). Gate on --aes-tap/BBL_AES_LOG.
+    if (has_flag(argc, argv, "--aes-tap") || std::getenv("BBL_AES_LOG")) {
+        bbl::start_aes_tap();
+        std::atexit(bbl::stop_aes_tap);
     }
 
     // Note: the cloud APP key (create_task signer) is captured in the --flip-gate

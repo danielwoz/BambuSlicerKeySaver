@@ -36,6 +36,9 @@ const char* const kMarkers[] = {
     "/applications/",
     "\"aes256\"",
     "app_key",
+    "cert_id",                       // get_app_cert response envelope header
+    "reinstall_app_key",             // plugin log around response processing
+    "\"crl\"",                       // response body field
     "-----BEGIN CERTIFICATE-----",
     "-----BEGIN RSA PRIVATE",
     "-----BEGIN PRIVATE KEY-----",
