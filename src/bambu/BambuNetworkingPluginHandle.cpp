@@ -750,6 +750,10 @@ bool BambuNetworkingPluginHandle::agent_ready() const {
     return m_impl->agent != nullptr && m_impl->started;
 }
 
+void* BambuNetworkingPluginHandle::raw_agent() const {
+    return m_impl ? m_impl->agent : nullptr;
+}
+
 std::string BambuNetworkingPluginHandle::plugin_version() const {
 
 
@@ -1132,6 +1136,44 @@ int BambuNetworkingPluginHandle::start_sdcard_print(
     return m_impl->start_sdcard_print(
         m_impl->agent, std::move(pp),
          {},  {});
+}
+
+int BambuNetworkingPluginHandle::start_cloud_print(const CloudUploadParams& params) {
+    if (!m_impl->agent)       return -1;
+    if (!m_impl->start_print) return -2;
+    PluginPrintParams pp{};
+    copy_gui_fields_into_plugin_params(params, pp, "cloud");
+    // The genuine cloud start_print reads the upload file from a field other than
+    // `filename` (headless it opened an EMPTY path -> stage-3 "3mf is not exists").
+    // Mirror the local file into the other plausible upload-file fields; the file
+    // trace (BBL_FILE_TRACE) confirms which one the plugin actually opens.
+    if (pp.ftp_file.empty()) pp.ftp_file = params.local_file_path;
+    if (pp.dst_file.empty()) pp.dst_file = params.local_file_path;
+    auto stage_count = std::make_shared<std::atomic<long>>(0);
+    auto t0 = std::chrono::steady_clock::now();
+    long max_ms = 90000;
+    if (const char* mm = std::getenv("BAMBU_NET_PRINT_MAX_MS")) max_ms = std::atol(mm);
+    long cancel_after = 0;
+    if (const char* ca = std::getenv("BAMBU_NET_PRINT_CANCEL_AFTER_STAGE")) cancel_after = std::atol(ca);
+    auto update_fn = [stage_count](int status, int code, std::string msg) {
+        long n = ++(*stage_count);
+        std::fprintf(stderr, "[cloud-print] stage#%ld status=%d code=%d msg=%s\n", n, status, code, msg.c_str());
+        std::fflush(stderr);
+    };
+    auto cancel_fn = [stage_count, cancel_after, t0, max_ms]() -> bool {
+        bool by_stage = (cancel_after > 0 && stage_count->load() >= cancel_after);
+        bool by_time  = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count() >= max_ms;
+        if (by_stage || by_time) {
+            std::fprintf(stderr, "[cloud-print] cancel_fn -> true (by_stage=%d by_time=%d stages=%ld)\n",
+                         int(by_stage), int(by_time), stage_count->load());
+            std::fflush(stderr);
+            return true;
+        }
+        return false;
+    };
+    auto wait_fn = [](int, std::string) -> bool { return true; };
+    return m_impl->start_print(m_impl->agent, std::move(pp), update_fn, cancel_fn, wait_fn);
 }
 
 bool BambuNetworkingPluginHandle::is_local_connected() const {

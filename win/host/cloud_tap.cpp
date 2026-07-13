@@ -44,7 +44,7 @@ const char* const kMarkers[] = {
     "-----BEGIN PRIVATE KEY-----",
     "get_app_cert",
     "device-security-sign",
-    "GLOF0000000000.bambulab.com",   // DER cert subject/issuer CN -> triggers DER dump
+    "bambulab.com",                  // DER cert subject/issuer CN domain -> triggers DER dump
 };
 constexpr int NM = (int)(sizeof(kMarkers) / sizeof(kMarkers[0]));
 
@@ -55,13 +55,13 @@ bool     g_tables_ready = false;
 // ---- DER X.509 app-cert capture ------------------------------------------
 // The decrypted cloud app cert (and slicer/device certs) briefly appear in the
 // plugin's PRIVATE heap as raw DER X.509. Their subject/issuer DN embeds the
-// ASCII string below (CN=GLOF0000000000.bambulab.com). When we see it we walk
-// BACKWARD to the enclosing outer Certificate SEQUENCE (30 82 LL LL), read its
-// declared length, and dump those exact DER bytes to a per-cert file so the
-// full cert (and its RSA modulus) can be decoded offline -- unlike the 8KB
+// vendor domain below (the Bambu cert CNs are <id>.bambulab.com). When we see it
+// we walk BACKWARD to the enclosing outer Certificate SEQUENCE (30 82 LL LL),
+// read its declared length, and dump those exact DER bytes to a per-cert file so
+// the full cert (and its RSA modulus) can be decoded offline -- unlike the 8KB
 // HTTP window which fragments the cert. Distinct certs are deduped by content
 // hash, so the slicer cert, app cert and device cert each land once.
-const char kDerCn[] = "GLOF0000000000.bambulab.com";
+const char kDerCn[] = "bambulab.com";
 constexpr size_t kDerCnLen = sizeof(kDerCn) - 1;
 
 std::unordered_set<uint64_t>  g_der_seen;      // dedup dumped certs by full-DER hash

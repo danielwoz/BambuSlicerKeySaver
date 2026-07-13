@@ -61,6 +61,7 @@ $env:BAMBU_FAKE_REPORT  = $report
 $env:BBL_NO_FREEZE      = "1"     # DR breakpoint armed -> skip the double-suspend freeze pass
 $env:BBL_REARM_MS       = "50"    # background DR re-arm cadence
 $env:BBL_GATE_REGION_MB = "4"     # target small MEM_PRIVATE regions (fast cadence)
+$env:BBL_BLOCK_WATCHDOG = "1"     # keep the process alive past the first pass so the sweep gets many passes
 if ($Diag) { $env:BBL_GATE_DIAG = $gt } else { Remove-Item Env:BBL_GATE_DIAG -ErrorAction SilentlyContinue }
 
 $landed = $false

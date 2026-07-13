@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 #pragma intrinsic(_ReturnAddress)
@@ -110,5 +111,63 @@ void stop_rng_tap()
 }
 
 long long rng_tap_hits() { return g_hits; }
+
+// ---- file-trace: hook CreateFile/GetFileAttributes so we can see exactly which
+// paths the plugin opens (to diagnose start_print's stage-3 "3mf is not exists").
+namespace {
+using CreateFileW_t = HANDLE (WINAPI*)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+using CreateFileA_t = HANDLE (WINAPI*)(LPCSTR,  DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+using GetAttrW_t    = DWORD  (WINAPI*)(LPCWSTR);
+using GetAttrExW_t  = BOOL   (WINAPI*)(LPCWSTR, GET_FILEEX_INFO_LEVELS, LPVOID);
+CreateFileW_t o_CreateFileW = nullptr;
+CreateFileA_t o_CreateFileA = nullptr;
+GetAttrW_t    o_GetAttrW    = nullptr;
+GetAttrExW_t  o_GetAttrExW  = nullptr;
+FILE*         g_flog        = nullptr;
+void flog_path(const char* fn, const char* p, bool ok, DWORD err) {
+    if (!g_flog) return;
+    const char* s = p ? p : "(null)";
+    bool empty = !s[0] || !std::strcmp(s, "(null)");
+    bool interesting = strstr(s,".3mf")||strstr(s,".gcode")||strstr(s,"cube")||strstr(s,"bambu")||
+                       strstr(s,"plate_")||strstr(s,"Temp")||strstr(s,"cloud")||strstr(s,".3MF")||strstr(s,"3D");
+    if (interesting || !ok || empty) {
+        void* fr[40]; USHORT n = RtlCaptureStackBackTrace(1, 40, fr, nullptr);
+        std::fprintf(g_flog, "%-14s '%s' -> %s err=%lu  plugin_stack=[", fn, s, ok?"OK":"FAIL", err);
+        int c = 0;
+        for (USHORT i = 0; i < n && c < 8; ++i)
+            if (in_plugin((uintptr_t)fr[i])) { std::fprintf(g_flog, "%s0x%llx", c?",":"", (unsigned long long)((uintptr_t)fr[i]-g_base)); ++c; }
+        std::fprintf(g_flog, "]\n"); std::fflush(g_flog);
+    }
+}
+void flog_w(const char* fn, LPCWSTR w, bool ok, DWORD err) {
+    if (!g_flog) return;
+    if (!w) { flog_path(fn, "(null)", ok, err); return; }
+    char b[1024]; int n = WideCharToMultiByte(CP_UTF8,0,w,-1,b,(int)sizeof b,nullptr,nullptr);
+    flog_path(fn, n>0 ? b : "", ok, err);
+}
+HANDLE WINAPI hk_CreateFileW(LPCWSTR n, DWORD a, DWORD s, LPSECURITY_ATTRIBUTES sa, DWORD d, DWORD f, HANDLE t) {
+    HANDLE h=o_CreateFileW(n,a,s,sa,d,f,t); flog_w("CreateFileW",n,h!=INVALID_HANDLE_VALUE,h==INVALID_HANDLE_VALUE?GetLastError():0); return h; }
+HANDLE WINAPI hk_CreateFileA(LPCSTR n, DWORD a, DWORD s, LPSECURITY_ATTRIBUTES sa, DWORD d, DWORD f, HANDLE t) {
+    HANDLE h=o_CreateFileA(n,a,s,sa,d,f,t); flog_path("CreateFileA",n,h!=INVALID_HANDLE_VALUE,h==INVALID_HANDLE_VALUE?GetLastError():0); return h; }
+DWORD WINAPI hk_GetAttrW(LPCWSTR n) { DWORD r=o_GetAttrW(n); flog_w("GetFileAttrW",n,r!=INVALID_FILE_ATTRIBUTES,r==INVALID_FILE_ATTRIBUTES?GetLastError():0); return r; }
+BOOL  WINAPI hk_GetAttrExW(LPCWSTR n, GET_FILEEX_INFO_LEVELS lv, LPVOID o) { BOOL r=o_GetAttrExW(n,lv,o); flog_w("GetFileAttrExW",n,r!=0,r?0:GetLastError()); return r; }
+} // namespace
+
+void start_file_trace() {
+    static bool started=false; if (started) return; started=true;
+    const char* path=std::getenv("BBL_FILE_TRACE"); if(!path||!path[0]) path="file_trace.log";
+    g_flog=std::fopen(path,"a");
+    if (!g_base) if (HMODULE m=GetModuleHandleA("bambu_networking.dll")) {
+        g_base=(uintptr_t)m; MODULEINFO mi{};
+        if (GetModuleInformation(GetCurrentProcess(),m,&mi,sizeof mi)) g_end=g_base+mi.SizeOfImage;
+    }
+    MH_Initialize();
+    MH_CreateHookApi(L"kernelbase.dll","CreateFileW",(void*)hk_CreateFileW,(void**)&o_CreateFileW);
+    MH_CreateHookApi(L"kernelbase.dll","CreateFileA",(void*)hk_CreateFileA,(void**)&o_CreateFileA);
+    MH_CreateHookApi(L"kernelbase.dll","GetFileAttributesW",(void*)hk_GetAttrW,(void**)&o_GetAttrW);
+    MH_CreateHookApi(L"kernelbase.dll","GetFileAttributesExW",(void*)hk_GetAttrExW,(void**)&o_GetAttrExW);
+    MH_EnableHook(MH_ALL_HOOKS);
+    std::fprintf(stderr,"[file-trace] armed -> %s\n",path);
+}
 
 } // namespace bbl

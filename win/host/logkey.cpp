@@ -55,8 +55,9 @@ static bool aes_ecb_dec(BCRYPT_ALG_HANDLE hAlg, const uint8_t key[16],
     return s == 0;
 }
 
-// Returns 0 on success (prints the key + decrypted preview), 1 otherwise.
-int find_log_key(const char* logpath) {
+// Returns 0 on success (prints the key + decrypted preview), 1 otherwise. When
+// keyout is non-null the recovered 16-byte key is written there (ascii + hex).
+int find_log_key(const char* logpath, const char* keyout) {
     std::vector<uint8_t> log;
     if (!read_file(logpath, log) || log.size() < 64) {
         std::fprintf(stderr, "[logkey] cannot read log %s\n", logpath);
@@ -118,6 +119,14 @@ int find_log_key(const char* logpath) {
         std::fprintf(stderr, "[logkey] BEST key=");
         for (int i = 0; i < 16; ++i) std::fprintf(stderr, "%02x", best_key[i]);
         std::fprintf(stderr, "\n[logkey] BEST preview='%.*s'\n", TEST, (const char*)best_pt);
+        if (keyout && keyout[0]) {
+            if (FILE* kf = std::fopen(keyout, "wb")) {
+                std::fprintf(kf, "debug-log key (AES-128-ECB)\nascii: %.16s\nhex:   ", (const char*)best_key);
+                for (int i = 0; i < 16; ++i) std::fprintf(kf, "%02x", best_key[i]);
+                std::fprintf(kf, "\n");
+                std::fclose(kf);
+            }
+        }
         // Full-log decrypt to a sidecar file for inspection.
         size_t full = log.size() & ~size_t(15);
         std::vector<uint8_t> out(full);

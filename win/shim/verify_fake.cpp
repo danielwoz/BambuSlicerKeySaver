@@ -655,7 +655,8 @@ void install_verify_fake() {
 
     // MinHook may already be initialised by another component (death_diag installs
     // its exit hooks first). ALREADY_INITIALIZED is fine -- our hooks still create.
-    // Bailing here silently disabled ALL the anti-debug/DR-scrubbing hooks below.
+    // Returning on ALREADY_INITIALIZED would skip installing the context
+    // (debug-register) and CNG hooks below.
     { MH_STATUS s_ = MH_Initialize();
       if (s_ != MH_OK && s_ != MH_ERROR_ALREADY_INITIALIZED) { logf("MH_Initialize failed (%d)", (int)s_); return; } }
 
@@ -703,7 +704,7 @@ void install_verify_fake() {
     // Minimal mode is for the heap/freeze capture (no hardware breakpoint, so
     // debug-register masking is not needed).
     bool minimal = std::getenv("BBL_MINIMAL_HOOKS") != nullptr;
-    if (minimal) logf("install: MINIMAL hook set (anti-debug/DR/CNG hooks skipped)");
+    if (minimal) logf("install: MINIMAL hook set (context/debug-register and CNG hooks skipped)");
 
     // Debug-register masking hooks on the real GetThreadContext/SetThreadContext.
     HMODULE kb = minimal ? nullptr : GetModuleHandleW(L"kernelbase.dll");
