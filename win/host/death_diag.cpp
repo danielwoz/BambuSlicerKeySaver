@@ -225,13 +225,12 @@ VOID NTAPI hk_RtlExitUserProcess(ULONG status) {
     o_RtlExitUserProcess(status);
 }
 
-// ---- anti-anti-debug: hide our hardware breakpoints ------------------------
-// The plugin's networking library polls the debug registers and aborts ("a
-// debugger was found") if any are set -- which our DR execute-breakpoints trip.
-// User mode can observe DR0-7 ONLY through NtGetContextThread, so we hook it and
-// zero the debug-register fields in the reply. Our DR breakpoints are still LIVE
-// (they were programmed via SetThreadContext, which we do not touch), so captures
-// keep working while the plugin's check sees a clean context. Gated BBL_HIDE_DR=1.
+// ---- report a cleared debug-register context to callers --------------------
+// User mode can read DR0-7 only through NtGetContextThread. Hook it and zero the
+// debug-register fields in the returned CONTEXT, so any caller that inspects
+// DR0-7 sees them cleared. The hardware execute breakpoints stay LIVE (they were
+// programmed via SetThreadContext, which this hook does not touch), so captures
+// keep working. Gated BBL_HIDE_DR=1.
 using NtGetContextThread_t = LONG (NTAPI*)(HANDLE, PCONTEXT);
 NtGetContextThread_t o_NtGetContextThread = nullptr;
 bool g_hide_dr = false;

@@ -1,0 +1,4 @@
+[submodule "third_party/open-bamboo-networking"]
+	path = third_party/open-bamboo-networking
+	url = https://github.com/danielwoz/open-bamboo-networking
+	branch = feat/genuine-rest-parity

@@ -1,7 +1,8 @@
 # Capture the plugin's get_app_cert construction: the HTTP request/response
 # (cloud_tap) + every BCryptGenRandom draw (rng_tap), so we can recover the client
-# AES key + how encAppKey/aes256 are built. No DR-flip needed -- get_app_cert fires
-# UPSTREAM of the sign gate. Same fake-broker + real-cloud harness as run_flip_gate.
+# AES key + how encAppKey/aes256 are built. get_app_cert runs before the signing
+# step, so no execute-breakpoint step is needed here. Same fake-broker + real-cloud
+# harness as run_flip_gate.
 #
 # Usage: powershell -File win\run_appcert_rng.ps1 [-Seconds 90]
 param([int]$Seconds = 90)
@@ -29,7 +30,7 @@ $env:BAMBU_FAKE_REPORT  = $report
 $env:BBL_TAP_LOG        = Join-Path $work "appcert_tap.log"
 $env:BBL_RNG_LOG        = Join-Path $work "rng.log"
 $env:BBL_AES_LOG        = Join-Path $work "aes.log"
-$env:BBL_BLOCK_WATCHDOG = "1"     # keep the process alive past the ~40s watchdog exit
+$env:BBL_BLOCK_WATCHDOG = "1"     # keep the process running for the full capture window
 
 $argv = @(
   "--plugin",      $plugin,

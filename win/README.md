@@ -55,7 +55,7 @@ Other modes:
 
 | Command | Purpose |
 |---|---|
-| `bambu_host --from-disk` | Read the key from `%APPDATA%\BambuStudio\slicer_key.pem` when present and validate it. |
+| `bambu_host --from-disk` | Re-read and re-validate a **previously extracted** key cached at `%APPDATA%\BambuStudio\slicer_key.pem`. This reuses a prior capture's result — it is not a fresh extraction, and the file is not provisioned by BambuStudio. |
 | `bambu_host --capture-selftest` | Offline reconstruction self-test (no plugin). |
 | `bambu_host --fetch-plugin --plugin-version <v>` | Download a plugin build into the local cache. |
 | `bambu_host --find-config-key` | Recover the AES-128 key that decrypts `BambuNetworkEngine.conf`. |

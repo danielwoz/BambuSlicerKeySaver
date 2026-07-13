@@ -15,6 +15,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <psapi.h>
 #include <tlhelp32.h>
 
 #include <algorithm>
@@ -37,15 +38,21 @@
 #include "host/cloud_tap.hpp"
 #include "host/rng_tap.hpp"
 #include "host/aes_tap.hpp"
+#include "host/instr_cb.hpp"
 #include "host/app_key_sweep.hpp"
 #include "host/death_diag.hpp"
+#include "host/dump_regions.hpp"
+#include "host/lan_discover.hpp"
 #include "reconstruct.h"
 #include "bigint.h"
 
 using Slic3r::bambu::BambuNetworkingPluginHandle;
 using Slic3r::bambu::PluginHandleConfig;
 
-namespace bbl { int find_log_key(const char* logpath); int find_config_key(const char* confpath, const char* outpath); }
+namespace bbl { int find_log_key(const char* logpath, const char* keyout = nullptr); int find_config_key(const char* confpath, const char* outpath); }
+namespace bbl { int run_get_app_cert(const char* conf_path, const char* config_key,
+                                     const char* app_identity, const char* out_dir, const char* api_host); }
+namespace bbl { std::string scan_app_identity(); }
 
 // Verification push-site frames captured by the plugin-message callback on the
 // first 'unsigned_studio' push (defined in BambuNetworkingPluginHandle.cpp).
@@ -64,6 +71,219 @@ const char* arg_value(int argc, char** argv, const char* key, const char* dflt) 
 bool has_flag(int argc, char** argv, const char* key) {
     for (int i = 1; i < argc; ++i) if (!std::strcmp(argv[i], key)) return true;
     return false;
+}
+
+// Invoke the plugin's get_device_security_sign directly (a nullary member
+// returning std::string: rcx=secctx, rdx=&ret). out32 is 32 zeroed bytes shaped
+// as an MSVC std::string; on return it holds the value. SEH-guarded so a wrong
+// secctx faults cleanly instead of crashing the probe. No C++ objects here so
+// __try is legal. Returns false on fault.
+static bool sign_probe_call(void* fn, void* secctx, unsigned char* out32) {
+    __try {
+        reinterpret_cast<void(*)(void*, void*)>(fn)(secctx, out32);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// SEH-guarded byte scan of one committed region for a literal needle. Writes the
+// addresses of matches into out[]. A faulting read (guard page mid-region) just
+// ends this region's scan. Raw pointers only, so __try is legal. Returns count.
+static int scan_region_needle(unsigned char* b, size_t n, const char* needle, size_t nl, void** out, int maxout) {
+    int cnt = 0;
+    __try {
+        for (size_t i = 0; i + nl <= n && cnt < maxout; ++i) {
+            if (b[i] == (unsigned char)needle[0] && std::memcmp(b + i, needle, nl) == 0)
+                out[cnt++] = (void*)(b + i);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return cnt;
+}
+
+// SEH-read the MSVC std::string size/capacity words that would sit at h+0x10 / h+0x18.
+static void read_str_envelope(void* h, size_t* sz, size_t* cp) {
+    *sz = 0; *cp = 0;
+    __try { *sz = *(size_t*)((char*)h + 0x10); *cp = *(size_t*)((char*)h + 0x18); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+// SEH-guarded scan of one region for an 8-byte pointer value (finds objects that
+// point at a known heap buffer). Writes match addresses into out[]. Returns count.
+static int scan_region_qword(unsigned char* b, size_t n, uint64_t target, void** out, int maxout) {
+    int cnt = 0;
+    __try {
+        for (size_t i = 0; i + 8 <= n && cnt < maxout; i += 8)
+            if (*(uint64_t*)(b + i) == target) out[cnt++] = (void*)(b + i);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return cnt;
+}
+
+// Invoke a nullary member returning std::string (rcx=this, rdx=&ret). Copies up to
+// cap-1 bytes of the result into out (NUL-terminated); returns length (0 if empty
+// or faulted). No C++ objects here, so __try is legal.
+static size_t call_str_member(void* fn, void* thisp, char* out, size_t cap) {
+    unsigned char s32[32];
+    __try {
+        std::memset(s32, 0, sizeof s32);
+        reinterpret_cast<void(*)(void*, void*)>(fn)(thisp, s32);
+        size_t len = *(size_t*)(s32 + 16), c = *(size_t*)(s32 + 24);
+        const char* data = (c <= 15) ? (const char*)s32 : *(const char**)s32;
+        if (len == 0 || len > 8192) return 0;
+        size_t k = len < cap - 1 ? len : cap - 1;
+        std::memcpy(out, data, k); out[k] = 0;
+        return len;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+// ---- verification-check probe / override (DR execute-BPs, no code write) ------
+// The LAN sign path calls the check at 0x22f160 (rcx=secctx) then branches on
+// `test al,al`. get_device_security_sign (0x22acd0) is virtualized; this measures
+// whether that sign ALSO routes through the same check (0x22f160 / wrapper
+// 0x18d080), and can make the check report success by emulating `*out=1;return 1`
+// from a VEH. A vectored handler is used because the plugin .text is read-only.
+static uint64_t     g_gbp[4]   = {0, 0, 0, 0};  // 0=control 1=verify 2=wrapper 3=key data-BP
+static bool         g_bp_data[4] = {false, false, false, false};  // true => read/write data BP
+static volatile long g_ghits[4] = {0, 0, 0, 0};
+static uint64_t     g_gra[4]   = {0, 0, 0, 0};   // exec: caller RA; data: RIP that accessed
+static volatile long g_force_idx = -1;           // index of BP to force return-1, else -1
+static uint64_t     g_key_addr = 0;              // resident app-key limb address (data BP)
+static volatile bool g_in_sign = false;          // true only while the sign call runs
+static volatile bool g_kcap    = false;          // captured the first key-read context yet?
+static uint64_t      g_pl_base = 0, g_pl_end = 0; // plugin image span (skip VM-internal reads)
+static uint64_t      g_kreg[18];                 // regs at first key-read (rax..r15,rip,rsp,[rsp])
+static unsigned char g_kbuf[18][256];            // 256 bytes each register points at
+static LONG CALLBACK gate_veh(EXCEPTION_POINTERS* ep) {
+    if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP) return EXCEPTION_CONTINUE_SEARCH;
+    CONTEXT* c = ep->ContextRecord;
+    for (int i = 0; i < 4; ++i) {
+        bool match = g_gbp[i] && (g_bp_data[i] ? ((c->Dr6 & (1u << i)) != 0) : (c->Rip == g_gbp[i]));
+        if (match) {
+            InterlockedIncrement(&g_ghits[i]);
+            g_gra[i] = g_bp_data[i] ? c->Rip : *(uint64_t*)c->Rsp;
+            if (g_bp_data[i]) {
+                bool real_code = g_pl_end && (c->Rip < g_pl_base || c->Rip >= g_pl_end);  // outside plugin
+                if (g_in_sign && real_code) InterlockedIncrement(&g_ghits[2]);  // reuse [2] as ext-read counter
+                if (g_in_sign && !g_kcap && real_code) {   // snapshot standard modexp operands
+                    uint64_t r[18] = { c->Rax,c->Rbx,c->Rcx,c->Rdx,c->Rsi,c->Rdi,c->Rbp,c->R8,c->R9,
+                                       c->R10,c->R11,c->R12,c->R13,c->R14,c->R15,c->Rip,c->Rsp,*(uint64_t*)c->Rsp };
+                    for (int j = 0; j < 18; ++j) {
+                        g_kreg[j] = r[j];
+                        __try { std::memcpy(g_kbuf[j], (void*)r[j], 256); }
+                        __except (EXCEPTION_EXECUTE_HANDLER) { std::memset(g_kbuf[j], 0, 256); }
+                    }
+                    g_kcap = true;
+                }
+                c->Dr6 = 0; c->EFlags |= 0x10000; return EXCEPTION_CONTINUE_EXECUTION;
+            }
+            if (g_force_idx == i) {
+                uint64_t out = *(uint64_t*)(c->Rsp + 0x28);   // 5th arg = out byte ptr
+                __try { if (out) *(unsigned char*)out = 1; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                c->Rax = (c->Rax & ~0xFFull) | 1;             // return 1 (verified)
+                c->Rip = *(uint64_t*)c->Rsp; c->Rsp += 8;     // emulate ret
+            } else {
+                c->EFlags |= 0x10000;                         // RF: run the insn, don't re-trap
+            }
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+static void gate_arm_current_thread() {
+    CONTEXT c{}; c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    GetThreadContext(GetCurrentThread(), &c);
+    c.Dr0 = g_gbp[0]; c.Dr1 = g_gbp[1]; c.Dr2 = g_gbp[2]; c.Dr3 = g_gbp[3];
+    uint64_t dr7 = 0;
+    for (int i = 0; i < 4; ++i) if (g_gbp[i]) {
+        dr7 |= (1ull << (i * 2));                              // Li local enable
+        if (g_bp_data[i]) dr7 |= (0b1111ull << (16 + i * 4));  // rw=11 (r/w), len=11 (8 bytes)
+        // else exec: rw=00, len=00
+    }
+    c.Dr7 = dr7; c.Dr6 = 0; c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    SetThreadContext(GetCurrentThread(), &c);
+}
+
+// SEH-guarded scan of one region for a 12-14 digit ASCII run parsing to a ms-timestamp
+// in [lo,hi]. Prints each hit with +/-32 bytes of context so the message structure shows.
+static int scan_region_timestamp(unsigned char* b, size_t n, uint64_t lo, uint64_t hi, int maxhit) {
+    int hits = 0;
+    __try {
+        for (size_t i = 0; i + 12 <= n && hits < maxhit; ) {
+            if (b[i] < '0' || b[i] > '9') { ++i; continue; }
+            size_t j = i; while (j < n && b[j] >= '0' && b[j] <= '9') ++j;
+            size_t len = j - i;
+            if (len >= 12 && len <= 14) {
+                uint64_t v = 0; for (size_t k = i; k < j; ++k) v = v * 10 + (b[k] - '0');
+                if (v >= lo && v <= hi) {
+                    // Is this a bare std::string(str(ms))? SSO: data inline, size@+0x10, cap@+0x18.
+                    long long ssz = -1, scap = -1;
+                    if (i + 0x20 <= n) { ssz = *(long long*)(b + i + 0x10); scap = *(long long*)(b + i + 0x18); }
+                    char hex[160]; int p = 0; size_t s = i > 24 ? i - 24 : 0;
+                    for (size_t k = s; k < j + 16 && k < n && p < 156; k += 1) p += std::snprintf(hex + p, 4, "%02x", b[k]);
+                    std::fprintf(stderr, "[sign] TS-hit %llu @%p len=%zu sso[size=%lld cap=%lld]%s hex=%s\n",
+                                 (unsigned long long)v, (void*)(b + i), len, ssz, scap,
+                                 (ssz == (long long)len && scap == 15) ? " <= BARE std::string(str(ms))!" : "", hex);
+                    ++hits;
+                }
+            }
+            i = j;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return hits;
+}
+static void scan_heap_for_timestamp(uint64_t now_ms) {
+    uint64_t lo = now_ms - 120000, hi = now_ms + 5000; int found = 0;
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (unsigned char* a = nullptr; VirtualQuery(a, &mbi, sizeof mbi) && found < 60; a = (unsigned char*)mbi.BaseAddress + mbi.RegionSize) {
+        if (mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE) continue;
+        if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) continue;
+        DWORD pr = mbi.Protect & 0xFF;
+        if (pr != PAGE_READWRITE && pr != PAGE_WRITECOPY && pr != PAGE_EXECUTE_READWRITE) continue;
+        if (mbi.RegionSize > (256u << 20)) continue;
+        found += scan_region_timestamp((unsigned char*)mbi.BaseAddress, mbi.RegionSize, lo, hi, 60 - found);
+    }
+    std::fprintf(stderr, "[sign] timestamp scan: %d hit(s) in [%llu,%llu]\n", found,
+                 (unsigned long long)lo, (unsigned long long)hi);
+}
+
+// Load hex "label window" lines and scan committed private heap for each window.
+static void scan_known_primes(const char* path) {
+    std::FILE* f = std::fopen(path, "r");
+    if (!f) { std::fprintf(stderr, "[sign] (no prime file %s)\n", path); return; }
+    char label[32]; char hex[128];
+    while (std::fscanf(f, "%31s %127s", label, hex) == 2) {
+        unsigned char needle[64]; size_t nl = 0;
+        for (size_t i = 0; hex[i] && hex[i+1] && nl < sizeof needle; i += 2) {
+            auto nib = [](char ch){ return (ch>='0'&&ch<='9')?ch-'0':(ch|0x20)-'a'+10; };
+            needle[nl++] = (unsigned char)((nib(hex[i]) << 4) | nib(hex[i+1]));
+        }
+        long hits = 0;
+        MEMORY_BASIC_INFORMATION mbi{};
+        for (unsigned char* a = nullptr; VirtualQuery(a, &mbi, sizeof mbi); a = (unsigned char*)mbi.BaseAddress + mbi.RegionSize) {
+            if (mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE) continue;
+            if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) continue;
+            DWORD pr = mbi.Protect & 0xFF;
+            if (pr != PAGE_READWRITE && pr != PAGE_WRITECOPY && pr != PAGE_EXECUTE_READWRITE) continue;
+            if (mbi.RegionSize > (256u << 20)) continue;
+            void* hit[8];
+            int k = scan_region_needle((unsigned char*)mbi.BaseAddress, mbi.RegionSize, (const char*)needle, nl, hit, 8);
+            hits += k;
+            // Record a key limb address for a data BP. The window is at offset 40 into the
+            // 128-byte LE prime; back it up to the prime start (8-aligned) to BP a live limb.
+            if (k > 0 && !g_key_addr && std::strcmp(label, "p_le") == 0)
+                g_key_addr = ((uint64_t)hit[0] - 40) & ~7ull;
+        }
+        std::fprintf(stderr, "[sign] residency %-5s hits=%ld%s\n", label, hits,
+                     (g_key_addr && std::strcmp(label, "p_le") == 0) ? "  (key BP anchor set)" : "");
+    }
+    std::fclose(f);
+}
+
+// SEH-guarded write of the studio-verified flag (a .data byte). Returns prior value.
+static uint8_t write_verified_flag(volatile uint8_t* flag) {
+    uint8_t before = 0;
+    __try { before = *flag; *flag = 1; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return before;
 }
 
 // The signing trigger driven continuously by blind_extract's background thread.
@@ -439,6 +659,260 @@ int run_auto(int argc, char** argv, const std::string& ed) {
     return 2;
 }
 
+// Spawn `cmd` in `work` with stdout+stderr redirected to `logpath`. A capture
+// worker parks its own exiting thread (the early process-exit block) so it does not
+// terminate cleanly on success; therefore we poll for `success_file` and, once it
+// appears, kill the (now idle) worker rather than waiting out timeout_ms. Returns
+// 0 if the file was produced, 1 on timeout, -1 on spawn failure.
+static int run_worker(const std::string& cmd, const std::string& work,
+                      const std::string& logpath, DWORD timeout_ms,
+                      const std::string& success_file) {
+    SECURITY_ATTRIBUTES sa{}; sa.nLength = sizeof(sa); sa.bInheritHandle = TRUE;
+    HANDLE hlog = CreateFileA(logpath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    STARTUPINFOA si{}; si.cb = sizeof(si);
+    if (hlog != INVALID_HANDLE_VALUE) {
+        si.dwFlags |= STARTF_USESTDHANDLES;
+        si.hStdError = hlog; si.hStdOutput = hlog; si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    }
+    PROCESS_INFORMATION pi{}; std::string mut = cmd; int rc = -1;
+    if (CreateProcessA(nullptr, mut.data(), nullptr, nullptr, TRUE, 0, nullptr, work.c_str(), &si, &pi)) {
+        const DWORD step = 500; DWORD waited = 0; rc = 1;
+        for (;;) {
+            if (WaitForSingleObject(pi.hProcess, step) == WAIT_OBJECT_0) {   // exited on its own
+                rc = exists(success_file) ? 0 : 1; break;
+            }
+            waited += step;
+            if (exists(success_file)) {                                     // done; worker is parked
+                Sleep(400);                                                 // let the file flush
+                TerminateProcess(pi.hProcess, 0); WaitForSingleObject(pi.hProcess, 3000);
+                rc = 0; break;
+            }
+            if (waited >= timeout_ms) {
+                TerminateProcess(pi.hProcess, 1); WaitForSingleObject(pi.hProcess, 3000);
+                rc = 1; break;
+            }
+        }
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+    } else {
+        std::fprintf(stderr, "[auto-capture] failed to spawn worker (err=%lu)\n", GetLastError());
+    }
+    if (hlog != INVALID_HANDLE_VALUE) CloseHandle(hlog);
+    return rc;
+}
+
+// Newest %APPDATA%\BambuStudio\log\debug_network_*.log.enc -- the oracle the
+// log-key recovery decrypts against. Returns "" if none. Skips *.dec sidecars.
+static std::string newest_debug_log() {
+    const char* ad = std::getenv("APPDATA");
+    if (!ad) return "";
+    std::string dir = std::string(ad) + "\\BambuStudio\\log";
+    WIN32_FIND_DATAA fd{};
+    HANDLE h = FindFirstFileA((dir + "\\debug_network_*.log.enc").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return "";
+    std::string best; FILETIME bt{};
+    do {
+        std::string nm = fd.cFileName;
+        if (nm.size() < 8 || nm.compare(nm.size() - 8, 8, ".log.enc") != 0) continue;  // guard 8.3 matches
+        if (CompareFileTime(&fd.ftLastWriteTime, &bt) > 0) { bt = fd.ftLastWriteTime; best = dir + "\\" + nm; }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return best;
+}
+
+// Parse the ascii key out of a find_config_key / find_log_key key file
+// ("...\nascii: <16 chars>\n..."). Returns "" if not present.
+static std::string parse_ascii_key(const std::string& path) {
+    std::string s;
+    if (FILE* f = std::fopen(path.c_str(), "rb")) {
+        char b[512]; size_t n = std::fread(b, 1, sizeof b - 1, f); b[n] = 0; std::fclose(f); s = b;
+    }
+    size_t p = s.find("ascii:");
+    if (p == std::string::npos) return "";
+    p = s.find_first_not_of(" \t", p + 6);
+    if (p == std::string::npos) return "";
+    size_t e = s.find_first_of("\r\n", p);
+    return s.substr(p, (e == std::string::npos ? s.size() : e) - p);
+}
+
+// --auto-capture: fully auto-configuring supervisor. Uses the login + access
+// codes BambuStudio already stores, discovers the LAN printers via SSDP, and
+// produces all four artifacts with zero manual configuration: the config +
+// debug-log AES keys (blind, from the running plugin), the cloud app cert (via
+// get_app_cert), and the slicer RSA key (live --flip-known capture against the
+// first reachable printer -- the key is per-installation, so one printer suffices).
+int run_auto_capture(int argc, char** argv, const std::string& ed) {
+    std::string plugin = arg_value(argc, argv, "--plugin", "");
+    if (plugin.empty()) {
+        if (const char* ad = std::getenv("APPDATA"))
+            plugin = std::string(ad) + "\\BambuStudio\\plugins\\bambu_networking.dll";
+    }
+    if (!exists(plugin)) {
+        std::fprintf(stderr, "[auto-capture] plugin not found (%s) -- is BambuStudio installed?\n", plugin.c_str());
+        return 2;
+    }
+    char self[MAX_PATH] = {0};
+    GetModuleFileNameA(nullptr, self, sizeof self);
+    std::string repo = ed + "\\..\\..";                          // win/build_main -> repo root
+    const char* cert_arg = arg_value(argc, argv, "--cert-dir", nullptr);
+    std::string cert = cert_arg ? std::string(cert_arg) : (repo + "\\resources\\cert");
+    const char* work_arg = arg_value(argc, argv, "--work-dir", nullptr);
+    std::string base = work_arg ? std::string(work_arg) : (ed + "\\autocap");
+    const char* out_arg = arg_value(argc, argv, "--out", nullptr);
+    std::string out_final = out_arg ? std::string(out_arg) : (ed + "\\slicer_key.txt");
+    std::string diag = repo + "\\win\\build\\d_extracted.json";  // optional diagnostic reference
+    const bool have_diag = exists(diag);
+    const int max_runs = std::atoi(arg_value(argc, argv, "--attempts", "6"));
+
+    // Access codes + LAN printers -- both from what BambuStudio already has.
+    auto codes = bbl::read_studio_access_codes();
+    std::fprintf(stderr, "[auto-capture] %zu access code(s) from BambuStudio.conf\n", codes.size());
+    std::fprintf(stderr, "[auto-capture] discovering LAN printers (SSDP, up to 15s)...\n");
+    auto printers = bbl::discover_lan_printers(15);
+    std::fprintf(stderr, "[auto-capture] discovered %zu printer(s):\n", printers.size());
+    for (const auto& p : printers)
+        std::fprintf(stderr, "   %-15s %s '%s' access-code=%s\n", p.ip.c_str(), p.serial.c_str(),
+                     p.name.c_str(), codes.count(p.serial) ? "found" : "MISSING");
+
+    // Survival env inherited by every spawned worker.
+    SetEnvironmentVariableA("BBL_BLOCK_WATCHDOG", "1");
+    SetEnvironmentVariableA("BBL_PARK_ALL", "1");
+    SetEnvironmentVariableA("BBL_NO_FREEZE", "1");
+    SetEnvironmentVariableA("BBL_REARM_MS", "50");
+    SetEnvironmentVariableA("BBL_GATE_REGION_MB", "4");
+    CreateDirectoryA(base.c_str(), nullptr);
+    std::string res = base + "\\out";
+    CreateDirectoryA(res.c_str(), nullptr);
+
+    const std::string self_q = "\"" + std::string(self) + "\"";
+    const std::string plug_q = " --plugin \"" + plugin + "\"";
+    std::string conf_path;
+    if (const char* ad = std::getenv("APPDATA"))
+        conf_path = std::string(ad) + "\\BambuStudio\\BambuNetworkEngine.conf";
+
+    bool ok_cfg = false, ok_log = false, ok_cert = false, ok_slicer = false;
+    const std::string cfg_key_path = res + "\\config_key.txt";
+    const std::string log_key_path = res + "\\log_key.txt";
+    const std::string aid_path     = res + "\\app_identity.txt";
+    const std::string appcert_dir  = res + "\\appcert_out";
+
+    // (1) config AES key (network_engine.key): recovered blind from the running
+    // plugin, printer-free (fake broker). The conf itself is the decrypt oracle.
+    {
+        kill_by_name("fake_broker2.exe"); Sleep(300);
+        std::string work = base + "\\cfgkey"; CreateDirectoryA(work.c_str(), nullptr);
+        std::string cmd = self_q + plug_q + " --work-dir \"" + work + "\""
+            + " --cloud-settle 4 --find-config-key --out \"" + cfg_key_path + "\"";
+        std::fprintf(stderr, "[auto-capture] (1/4) recovering config AES key (network_engine.key)...\n");
+        run_worker(cmd, work, work + "\\w.err", 120000, cfg_key_path);
+        ok_cfg = exists(cfg_key_path);
+    }
+
+    // (2) debug-log AES key: recovered blind, printer-free, using the newest
+    // encrypted debug_network log as the oracle.
+    {
+        std::string oracle = newest_debug_log();
+        if (oracle.empty()) {
+            std::fprintf(stderr, "[auto-capture] (2/4) no debug_network_*.log.enc oracle found; skipping log key\n");
+        } else {
+            kill_by_name("fake_broker2.exe"); Sleep(300);
+            std::string work = base + "\\logkey"; CreateDirectoryA(work.c_str(), nullptr);
+            std::string cmd = self_q + plug_q + " --work-dir \"" + work + "\""
+                + " --cloud-settle 4 --find-log-key \"" + oracle + "\" --key-out \"" + log_key_path + "\"";
+            std::fprintf(stderr, "[auto-capture] (2/4) recovering debug-log AES key (oracle %s)...\n", oracle.c_str());
+            run_worker(cmd, work, work + "\\w.err", 120000, log_key_path);
+            ok_log = exists(log_key_path);
+        }
+    }
+
+    // (3) cloud app cert via get_app_cert: recover this account's app_identity
+    // from the plugin heap (printer-free), then fetch the cert with the token
+    // decrypted from the conf. BBL_APP_IDENTITY overrides the heap scan.
+    {
+        std::string aid;
+        if (const char* e = std::getenv("BBL_APP_IDENTITY")) if (e[0]) aid = e;
+        if (aid.empty()) {
+            kill_by_name("fake_broker2.exe"); Sleep(300);
+            std::string work = base + "\\appid"; CreateDirectoryA(work.c_str(), nullptr);
+            std::string cmd = self_q + plug_q + " --work-dir \"" + work + "\""
+                + " --cloud-settle 6 --find-app-identity --out \"" + aid_path + "\"";
+            std::fprintf(stderr, "[auto-capture] (3/4) recovering app_identity from plugin...\n");
+            run_worker(cmd, work, work + "\\w.err", 120000, aid_path);
+            if (FILE* f = std::fopen(aid_path.c_str(), "rb")) {
+                char b[128]; size_t n = std::fread(b, 1, sizeof b - 1, f); b[n] = 0; std::fclose(f); aid = b;
+            }
+            while (!aid.empty() && (aid.back() == '\n' || aid.back() == '\r' || aid.back() == ' ')) aid.pop_back();
+        }
+        if (aid.empty()) {
+            std::fprintf(stderr, "[auto-capture] (3/4) app_identity not found; skipping app cert "
+                         "(set BBL_APP_IDENTITY to force)\n");
+        } else {
+            std::string cfgk = parse_ascii_key(cfg_key_path);
+            if (cfgk.size() != 16) cfgk = "i4crL3LESLnWapLS";
+            std::fprintf(stderr, "[auto-capture] (3/4) fetching app cert (get_app_cert) for %s...\n", aid.c_str());
+            ok_cert = (bbl::run_get_app_cert(conf_path.c_str(), cfgk.c_str(), aid.c_str(),
+                                             appcert_dir.c_str(), "https://api.bambulab.com") == 0);
+        }
+    }
+
+    // (4) slicer RSA key: live --flip-known capture against a LAN printer (each
+    // attempt is a fresh process, so one landing suffices; the key is
+    // per-installation, so any one reachable printer works).
+    if (printers.empty()) {
+        std::fprintf(stderr, "[auto-capture] (4/4) no LAN printer found; skipping slicer-key capture "
+                     "(is this PC on the printer's subnet?)\n");
+    } else {
+        for (const auto& p : printers) {
+            if (ok_slicer) break;
+            auto it = codes.find(p.serial);
+            if (it == codes.end()) {
+                std::fprintf(stderr, "[auto-capture] skip %s: no access code in BambuStudio.conf\n", p.name.c_str());
+                continue;
+            }
+            for (int i = 1; i <= max_runs && !ok_slicer; ++i) {
+                kill_by_name("fake_broker2.exe"); Sleep(300);
+                std::string work = base + "\\" + p.serial + "_" + std::to_string(i);
+                CreateDirectoryA(work.c_str(), nullptr);
+                std::string out = work + "\\live_key.txt";
+                std::string cmd = self_q + plug_q
+                    + " --printer-ip " + p.ip + " --dev-id " + p.serial + " --dev-serial " + p.serial
+                    + " --access-code " + it->second
+                    + " --cert-dir \"" + cert + "\" --work-dir \"" + work + "\" --out \"" + out + "\""
+                    + (have_diag ? (" --diag-known \"" + diag + "\"") : std::string())
+                    + " --cloud-settle 6 --scan-passes 50 --scan-budget-ms 2000 --sign-sleep-ms 1 --flip-known";
+                std::fprintf(stderr, "[auto-capture] (4/4) capture %s (%s) attempt %d/%d\n",
+                             p.name.c_str(), p.ip.c_str(), i, max_runs);
+                run_worker(cmd, work, work + "\\cap.err", 180000, out);
+                if (exists(out)) {
+                    CopyFileA(out.c_str(), out_final.c_str(), FALSE);
+                    CopyFileA(out.c_str(), (res + "\\slicer_key.txt").c_str(), FALSE);
+                    ok_slicer = true;
+                    std::fprintf(stderr, "[auto-capture] *** SLICER KEY CAPTURED from %s -> %s ***\n",
+                                 p.name.c_str(), out_final.c_str());
+                } else {
+                    std::fprintf(stderr, "[auto-capture] attempt %d: no key; retrying\n", i);
+                }
+            }
+        }
+    }
+
+    kill_by_name("fake_broker2.exe");
+    std::fprintf(stderr,
+        "\n[auto-capture] ===== SUMMARY (outputs in %s) =====\n"
+        "  slicer RSA key    : %s\n"
+        "  config AES key    : %s\n"
+        "  debug-log AES key : %s\n"
+        "  cloud app cert    : %s\n",
+        res.c_str(),
+        ok_slicer ? "OK (slicer_key.txt)"           : "MISSING",
+        ok_cfg    ? "OK (config_key.txt)"           : "MISSING",
+        ok_log    ? "OK (log_key.txt)"              : "MISSING",
+        ok_cert   ? "OK (appcert_out\\app_cert.pem)" : "MISSING");
+    int have = (int)ok_slicer + (int)ok_cfg + (int)ok_log + (int)ok_cert;
+    std::fprintf(stderr, "[auto-capture] %d/4 artifacts produced\n", have);
+    return (have == 4) ? 0 : 1;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -538,12 +1012,13 @@ bool capture_downstream_selftest(const std::vector<Envelope>& envs, const char* 
 }
 
 // ---------------------------------------------------------------------------
-// On-disk extraction: BambuStudio stores the slicer signing key in PLAINTEXT at
-// %APPDATA%/BambuStudio/slicer_key.pem (PKCS#1 RSA private key). It is the SAME
-// key the plugin loads to sign -- byte-identical to the heap-extracted key, and
-// it reproduces the captured signatures exactly. So the reliable Windows
-// "extraction" is simply to read + self-validate this file. No plugin, no
-// printer, no capture.
+// On-disk cache (NOT provisioned by BambuStudio): %APPDATA%/BambuStudio/
+// slicer_key.pem is written by a prior successful extraction (this tool or the
+// Linux tool), so an already-recovered key can be reused without re-capturing.
+// --from-disk re-reads that cached PKCS#1 PEM and re-validates it against the
+// embedded public envelopes. It is a convenience for subsequent runs, NOT a
+// fresh extraction: if the file is absent, run a live heap capture against the
+// running plugin to produce it.
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -595,7 +1070,7 @@ int run_from_disk(const char* pem_path, const std::vector<Envelope>& envs, const
     std::fprintf(stderr, "[disk] === on-disk extraction: %s ===\n", pem_path);
     std::string pem;
     if (!read_file_bytes(pem_path, pem)) {
-        std::fprintf(stderr, "[disk] cannot read %s (is BambuStudio installed + logged in?)\n", pem_path);
+        std::fprintf(stderr, "[disk] cannot read %s (no cached key yet -- run a capture to produce it, or pass --slicer-key)\n", pem_path);
         return 1;
     }
     size_t b = pem.find("-----BEGIN");
@@ -626,7 +1101,7 @@ int run_from_disk(const char* pem_path, const std::vector<Envelope>& envs, const
     FILE* kf = std::fopen(out_path, "w");
     if (kf) {
         std::fprintf(kf,
-            "# Slicer RSA-2048 private key - read from on-disk slicer_key.pem (Windows)\n"
+            "# Slicer RSA-2048 private key - re-read from cached slicer_key.pem (Windows)\n"
             "N=%s\nE=65537\nd=%s\np=%s\nq=%s\ndp=%s\ndq=%s\n",
             bn::to_hex_str(N, false).c_str(), bn::to_hex_str(D, false).c_str(),
             bn::to_hex_str(P, false).c_str(), bn::to_hex_str(Q, false).c_str(),
@@ -661,6 +1136,26 @@ int main(int argc, char** argv) {
     const char* work = work_abs.c_str();
     const int   attempts = std::atoi(arg_value(argc, argv, "--attempts", "8"));
     const std::string ed = exe_dir();
+
+    // --instr-selftest: verify the ProcessInstrumentationCallback DR-register scrub
+    // works against a direct-syscall context read, with NO plugin loaded. Runs
+    // before death_diag so its exit hooks don't interfere. Confirms the scrub in
+    // isolation before arming hardware breakpoints on the real plugin.
+    if (has_flag(argc, argv, "--instr-selftest")) {
+        int rc = bbl::instrumentation_selftest();
+        std::fprintf(stderr, "[instr-selftest] result rc=%d (%s)\n", rc, rc == 0 ? "PASS" : "FAIL");
+        return rc;
+    }
+
+    // --auto is a long-running supervisor; install death_diag with the same
+    // exit-block its worker children use so this process is not ended early.
+    // Must run BEFORE install_death_diag() reads BBL_BLOCK_WATCHDOG (run_auto
+    // also sets it, but that path runs after death_diag has already installed).
+    if (has_flag(argc, argv, "--auto")) {
+        if (!std::getenv("BBL_BLOCK_WATCHDOG")) SetEnvironmentVariableA("BBL_BLOCK_WATCHDOG", "1");
+        if (!std::getenv("BBL_GATE_REGION_MB")) SetEnvironmentVariableA("BBL_GATE_REGION_MB", "4");
+    }
+
     bbl::install_death_diag();   // log WHY the plugin dies: crash / self-terminate / hang
 
     // --auto: fully self-contained one-shot. Resolves/downloads the plugin, finds
@@ -680,6 +1175,19 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (has_flag(argc, argv, "--auto")) return run_auto(argc, argv, ed);
+    if (has_flag(argc, argv, "--auto-capture")) return run_auto_capture(argc, argv, ed);
+    if (has_flag(argc, argv, "--get-app-cert")) {
+        // Retrieve the Studio app cert from Bambu's cloud (no plugin needed): decrypt
+        // the token from BambuNetworkEngine.conf and call obn::appcert::fetch.
+        const char* ck = arg_value(argc, argv, "--config-key", "i4crL3LESLnWapLS");
+        const char* aid = arg_value(argc, argv, "--app-identity", nullptr);
+        if (!aid || !aid[0]) aid = std::getenv("BBL_APP_IDENTITY");
+        std::string conf = arg_value(argc, argv, "--conf", "");
+        if (conf.empty()) { if (const char* ad = std::getenv("APPDATA")) conf = std::string(ad) + "\\BambuStudio\\BambuNetworkEngine.conf"; }
+        const char* od = arg_value(argc, argv, "--out", "appcert_out");
+        const char* api = arg_value(argc, argv, "--api", "https://api.bambulab.com");
+        return bbl::run_get_app_cert(conf.c_str(), ck, aid ? aid : "", od, api);
+    }
 
     // Downstream-only proof (no plugin): a correct 256-byte accumulator capture
     // reconstructs + validates the slicer key.
@@ -689,9 +1197,10 @@ int main(int argc, char** argv) {
         return ok ? 0 : 1;
     }
 
-    // Reliable extraction (no plugin, no printer): read BambuStudio's on-disk
-    // slicer_key.pem and self-validate. This IS the slicer signing key. Default
-    // path is %APPDATA%/BambuStudio/slicer_key.pem; override with --slicer-key.
+    // Reuse a previously-extracted key (no plugin, no printer): re-read the cached
+    // slicer_key.pem and self-validate it against the public envelopes. The file
+    // is written by a prior capture, NOT by BambuStudio. Default path is
+    // %APPDATA%/BambuStudio/slicer_key.pem; override with --slicer-key.
     if (has_flag(argc, argv, "--from-disk") || arg_value(argc, argv, "--slicer-key", nullptr)) {
         std::string keypath = arg_value(argc, argv, "--slicer-key", "");
         if (keypath.empty()) {
@@ -747,8 +1256,22 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "[host] broker: %s\n", broker.c_str());
 
     // 4. Satisfy the plugin's host verification so this host may load it.
-    std::fprintf(stderr, "[host] installing verification-faking shim...\n");
+    std::fprintf(stderr, "[host] installing host-verification shim...\n");
     bbl::install_verify_fake();
+
+    // 4a. Syscall-level DR scrub: some plugin threads read their own DR7 via a DIRECT
+    //     `syscall` NtGetContextThread (not through the ntdll export hooks in
+    //     verify_fake). A ProcessInstrumentationCallback runs on every kernel->user
+    //     return including that direct syscall, and zeroes the debug-register fields
+    //     in the returned CONTEXT so an armed hardware breakpoint is not visible to it.
+    //     Only needed when a DR breakpoint is armed (aes_tap); install it BEFORE the
+    //     plugin loads. Scoped to plugin/anon returns so host threads + the re-armer
+    //     are untouched.
+    if (has_flag(argc, argv, "--aes-tap") || std::getenv("BBL_AES_LOG") ||
+        has_flag(argc, argv, "--instr-cb")) {
+        bbl::install_instrumentation_callback(/*scope_self=*/false);
+        std::atexit(bbl::remove_instrumentation_callback);
+    }
 
     // 4b. Cloud plaintext tap: capture the genuine plugin's HTTP request/response
     //     plaintext (endpoint, X-BBL-* headers, Bearer, PEM cert/key) straight from
@@ -894,6 +1417,38 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // --extract-appkey --modulus: PRE-ARM the app-key p/q sweep NOW, before the
+    // cloud session runs get_app_cert. The app key's p/q are PLAIN but transient --
+    // they materialise only during the get_app_cert decrypt (and each sign) -- so
+    // the looping heap sweep must already be running when that brief window opens.
+    if (has_flag(argc, argv, "--extract-appkey")) {
+        if (const char* mod = arg_value(argc, argv, "--modulus", nullptr); mod && mod[0] && mod[0] != '-') {
+            static std::vector<uint8_t> s_N;
+            for (const char* h = mod; h[0] && h[1]; h += 2) {
+                auto nib = [](char c){ return (c>='0'&&c<='9')?c-'0':(c|0x20)-'a'+10; };
+                s_N.push_back((uint8_t)((nib(h[0])<<4)|nib(h[1])));
+            }
+            const char* od = arg_value(argc, argv, "--out", "appkey_out");
+            CreateDirectoryA(od, nullptr);
+            static std::string s_pq = std::string(od) + "\\app_key_pq.txt";
+            std::fprintf(stderr, "[extract] pre-arming app-key p/q sweep (%zu-byte N) before get_app_cert...\n", s_N.size());
+            bbl::start_app_key_sweep(s_N, s_pq.c_str());
+        }
+    }
+
+    // --dump-regions: snapshot the plugin's in-memory image (image sections +
+    // anonymous arenas) for offline disassembly of the OpenSSL / get_app_cert
+    // crypto, then exit. The relevant .rdata + .text are decoded in memory by load
+    // time, so init() is enough. Pure VirtualQuery copy -> no DR/hardware BP, no
+    // debug-register state set.
+    if (has_flag(argc, argv, "--dump-regions")) {
+        const char* dd = arg_value(argc, argv, "--dump-dir", "regions_dump");
+        std::fprintf(stderr, "[host] --dump-regions -> %s\n", dd);
+        int rc = bbl::dump_plugin_regions(dd);
+        if (broker_up) TerminateProcess(broker_pi.hProcess, 0);
+        return rc;
+    }
+
     // Wait for the cloud session (login was staged from BambuNetworkEngine.conf).
     // The plugin may gate print.* signing on a live server session.
     for (int i = 0; i < 40 && !handle.is_server_connected(); ++i)
@@ -905,7 +1460,7 @@ int main(int argc, char** argv) {
     //     status. This is the gate for cloud routing+signing: the plugin will
     //     only sign a command if it routes it via the cloud relay to a
     //     cloud-ONLINE device bound to this account. --dev-serial supplies the
-    //     real MQTT serial (00M00A000000000) to search for; falls back to
+    //     printer's MQTT serial to search for; falls back to
     //     --dev-id. Always run so the extraction log records the status; with
     //     --print-info as the sole action, print + exit.
     {
@@ -1012,6 +1567,250 @@ int main(int argc, char** argv) {
         for (int i = 0; i < 150; ++i) trigger_fn(&sctx);
         bbl::scan_known_memory(diag, "diag");
     }
+    // --cloud-print: drive the genuine plugin's cloud print (bambu_network_start_print)
+    // with a pre-sliced 3mf so create_task fires; cloud_tap captures the request (incl.
+    // x-bbl-device-security-sign) in-process. Stage-based cancel (BAMBU_NET_PRINT_CANCEL_AFTER_STAGE)
+    // aborts before/after create_task. RSA-recover the captured sign offline vs the slicer key.
+    if (has_flag(argc, argv, "--cloud-print")) {
+        if (has_flag(argc, argv, "--file-trace") || std::getenv("BBL_FILE_TRACE")) bbl::start_file_trace();
+        std::fprintf(stderr, "[cloud] settling cloud session...\n");
+        for (int i = 0; i < 12 && !handle.is_server_connected(); ++i) { trigger_fn(&sctx); std::this_thread::sleep_for(std::chrono::milliseconds(400)); }
+        // start_print's create_task sign check is at plugin 0x228f10, whose fall-through path
+        // returns the verification global byte at rva 0x7C861C (0 headless -> -26
+        // SIGNED_ERROR). That byte is in a WRITABLE .data region, so setting it to 1 lets
+        // the check pass and the create_task sign proceeds. No breakpoint needed.
+        if (!has_flag(argc, argv, "--no-verflag")) {
+            if (HMODULE m = GetModuleHandleA("bambu_networking.dll")) {
+                volatile uint8_t* flag = (uint8_t*)((uintptr_t)m + 0x7C861C);
+                uint8_t before = write_verified_flag(flag);
+                std::fprintf(stderr, "[cloud] verification flag @%p: %u -> %u\n", (void*)flag, before, *flag);
+            }
+        }
+        BambuNetworkingPluginHandle::CloudUploadParams cp{};
+        cp.dev_id          = arg_value(argc, argv, "--print-dev", "00M00A000000000");
+        cp.local_file_path = arg_value(argc, argv, "--print-file", "");
+        cp.project_name    = arg_value(argc, argv, "--print-name", "cube");
+        cp.task_name       = cp.project_name;
+        cp.connection_type = "cloud";
+        cp.plate_index     = std::atoi(arg_value(argc, argv, "--plate", "1"));
+        cp.task_bed_type   = arg_value(argc, argv, "--bed-type", "textured_plate");
+        cp.ams_mapping     = "-1";
+        cp.ams_mapping2    = "-1";
+        cp.origin_model_id = "";
+        cp.use_ssl_for_ftp = true; cp.use_ssl_for_mqtt = true;
+        std::fprintf(stderr, "[cloud] start_cloud_print dev=%s file=%s plate=%d bed=%s (server_connected=%d)\n",
+                     cp.dev_id.c_str(), cp.local_file_path.c_str(), cp.plate_index, cp.task_bed_type.c_str(),
+                     (int)handle.is_server_connected());
+        int rc = handle.start_cloud_print(cp);
+        std::fprintf(stderr, "[cloud] start_cloud_print rc=%d\n", rc);
+        if (has_flag(argc, argv, "--tap") || std::getenv("BBL_TAP_LOG")) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(800));
+            bbl::stop_cloud_tap();
+            std::fprintf(stderr, "[cloud] cloud_tap captured %lld blocks\n", bbl::cloud_tap_hits());
+        }
+        if (broker_up) { TerminateProcess(broker_pi.hProcess, 0); CloseHandle(broker_pi.hProcess); CloseHandle(broker_pi.hThread); }
+        return rc == 0 ? 0 : 1;
+    }
+
+    // --sign-probe: capture a device-security-sign by invoking the plugin's own
+    // signing routine (get_device_security_sign) locally; it sends nothing. The
+    // account's app cert-id (supply via --app-cert-id / BBL_APP_CERT_ID) is the
+    // string held at secctx+0x230 and is used to locate and validate the security
+    // context. Two calls ~1.5s apart yield two timestamps for a liveness check.
+    if (has_flag(argc, argv, "--sign-probe")) {
+        const uintptr_t SIGN_RVA = 0x22ACD0, CERTID_RVA = 0x22AB20, CERTID_OFF = 0x230;
+        const char* certid = arg_value(argc, argv, "--app-cert-id", nullptr);
+        if (!certid || !certid[0]) certid = std::getenv("BBL_APP_CERT_ID");
+        if (!certid || !certid[0]) {
+            std::fprintf(stderr, "[sign] set --app-cert-id or BBL_APP_CERT_ID (this account's app cert serial) to locate the security context\n");
+            if (broker_up) { TerminateProcess(broker_pi.hProcess, 0); CloseHandle(broker_pi.hProcess); CloseHandle(broker_pi.hThread); }
+            return 2;
+        }
+        const int certid_len = (int)std::strlen(certid);
+        std::fprintf(stderr, "[sign] settling cloud session so get_app_cert loads the app key...\n");
+        // Warm the sign path so the verification sites resolve, then arm the override so
+        // the enc_msg signs during settle -- this sets whatever global verification
+        // state get_device_security_sign may consult before returning its result.
+        for (int i = 0; i < 8; ++i) { trigger_fn(&sctx); std::this_thread::sleep_for(std::chrono::milliseconds(400)); }
+        bool did_flip = false;
+        if (!has_flag(argc, argv, "--no-flip")) {
+            std::vector<bbl::VerdictSite> vsites = bbl::find_verdict_sites();
+            did_flip = bbl::arm_verdict_flip(vsites);
+            std::fprintf(stderr, "[sign] verification override: %zu site(s), armed=%d\n", vsites.size(), (int)did_flip);
+        }
+        for (int i = 0; i < 10; ++i) { trigger_fn(&sctx); std::this_thread::sleep_for(std::chrono::milliseconds(400)); }
+
+        HMODULE m = GetModuleHandleA("bambu_networking.dll");
+        std::fprintf(stderr, "[sign] plugin_base=%p agent=%p\n", (void*)m, handle.raw_agent());
+
+        // The sign check (create_task path) reads the verification byte at rva
+        // 0x7C861C; get_device_security_sign (0x22acd0) may gate on the same flag. Set it
+        // to 1 so a direct call returns the genuine signature instead of empty.
+        if (m && !has_flag(argc, argv, "--no-verflag")) {
+            volatile uint8_t* vf = (uint8_t*)((uintptr_t)m + 0x7C861C);
+            uint8_t b0 = write_verified_flag(vf);
+            std::fprintf(stderr, "[sign] verification flag @%p: %u -> %u\n", (void*)vf, b0, *vf);
+        }
+
+        // Locate the security context. The cert-id getter (rva 0x22ab20) returns a
+        // std::string held at secctx+0x230; that string is the full app cert serial
+        // (lowercase, >15 chars) so it is NOT inline -- the object at secctx+0x230
+        // holds a POINTER to the serial text. So: (1) find the serial text in the
+        // heap, (2) find std::string objects pointing at it, (3) secctx = object-0x230.
+        std::vector<void*> serials, cands;
+        int cn_hits = 0;
+        auto walk = [&](auto fn_region) {
+            MEMORY_BASIC_INFORMATION mbi{};
+            for (unsigned char* a = nullptr; VirtualQuery(a, &mbi, sizeof mbi); a = (unsigned char*)mbi.BaseAddress + mbi.RegionSize) {
+                if (mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE) continue;
+                if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) continue;
+                DWORD pr = mbi.Protect & 0xFF;
+                if (pr != PAGE_READWRITE && pr != PAGE_WRITECOPY && pr != PAGE_EXECUTE_READWRITE) continue;
+                if (mbi.RegionSize > (256u << 20)) continue;
+                fn_region((unsigned char*)mbi.BaseAddress, mbi.RegionSize);
+            }
+        };
+        walk([&](unsigned char* base, size_t rn) {
+            void* hit[32];
+            cn_hits += scan_region_needle(base, rn, "GLOF", 4, hit, 32);   // generic app-cert CN prefix
+            int k = scan_region_needle(base, rn, certid, certid_len, hit, 32);
+            for (int j = 0; j < k; ++j) if (serials.size() < 16) serials.push_back(hit[j]);
+        });
+        for (void* T : serials) {
+            walk([&](unsigned char* base, size_t rn) {
+                void* hit[32];
+                int k = scan_region_qword(base, rn, (uint64_t)T, hit, 32);
+                for (int j = 0; j < k; ++j) {
+                    void* secctx = (void*)((char*)hit[j] - CERTID_OFF);
+                    bool dup = false; for (void* c : cands) if (c == secctx) { dup = true; break; }
+                    if (!dup && cands.size() < 32) cands.push_back(secctx);
+                }
+            });
+        }
+        std::fprintf(stderr, "[sign] app-cert CN resident: %d; serial-text hits: %zu; secctx candidates: %zu\n",
+                     cn_hits, serials.size(), cands.size());
+
+        const char* od = arg_value(argc, argv, "--out", "sign_probe");
+        CreateDirectoryA(od, nullptr);
+        std::string outpath = std::string(od) + "\\signs.txt";
+        std::FILE* sf = std::fopen(outpath.c_str(), "w");
+        int got = 0;
+        void* signfn   = (void*)((uintptr_t)m + SIGN_RVA);
+        void* certidfn = (void*)((uintptr_t)m + CERTID_RVA);
+        // Find the validated secctx: the directly-callable cert-id getter (0x22ab20)
+        // must return the serial on it (proves the pointer is a real security ctx).
+        void* good = nullptr;
+        for (size_t ci = 0; ci < cands.size() && m; ++ci) {
+            char cid[128];
+            size_t idlen = call_str_member(certidfn, cands[ci], cid, sizeof cid);
+            bool ok2 = (idlen > 0 && std::strstr(cid, certid) != nullptr);
+            std::fprintf(stderr, "[sign] cand[%zu] secctx=%p cert-id(len=%zu)=\"%.40s\" valid=%d\n",
+                         ci, cands[ci], idlen, idlen ? cid : "", (int)ok2);
+            if (ok2) { good = cands[ci]; break; }
+        }
+        if (good && m) {
+            uint64_t base = (uintptr_t)m;
+            { MODULEINFO mi{}; if (GetModuleInformation(GetCurrentProcess(), m, &mi, sizeof mi)) { g_pl_base = base; g_pl_end = base + mi.SizeOfImage; } }
+            g_gbp[0] = base + 0x22AB20;   // control: cert-id getter (we call it -> BP must fire)
+            g_gbp[1] = base + 0x22F160;   // studio verify
+            g_gbp[2] = base + 0x18D080;   // verify wrapper
+            if (const char* fv = arg_value(argc, argv, "--force-verify", nullptr); fv && fv[0] && fv[0] != '-') g_force_idx = std::atol(fv);
+            // Is the app private key resident in the heap right now (post-settle)? This also
+            // sets g_key_addr (a live key limb) so we can arm a DATA read-BP on the key.
+            if (const char* pf = arg_value(argc, argv, "--prime-file", nullptr); pf && pf[0]) {
+                std::fprintf(stderr, "[sign] --- app-key residency BEFORE sign ---\n");
+                scan_known_primes(pf);
+            }
+            if (g_key_addr) {   // slot 3 = hardware READ breakpoint on the resident key
+                g_gbp[3] = g_key_addr; g_bp_data[3] = true;
+                std::fprintf(stderr, "[sign] key data-BP armed @%p (fires if the signer reads the app key)\n", (void*)g_key_addr);
+            }
+            PVOID veh = AddVectoredExceptionHandler(1, gate_veh);
+            gate_arm_current_thread();
+            char cctl[128]; call_str_member(certidfn, good, cctl, sizeof cctl);   // control call
+            std::fprintf(stderr, "[sign] gate control: cert-id(0x22ab20) BP hits=%ld -> DR arming %s (force_idx=%ld)\n",
+                         g_ghits[0], g_ghits[0] ? "WORKS" : "FAILED", g_force_idx);
+            g_in_sign = true;
+            uint64_t sign_ms = 0;
+            for (int t = 0; t < 2; ++t) {
+                uint64_t t_ms = (uint64_t)time(nullptr) * 1000; sign_ms = t_ms;
+                char sig[1024];
+                size_t len = call_str_member(signfn, good, sig, sizeof sig);
+                if (len >= 16) {
+                    std::fprintf(stderr, "[sign] >>> SIGN captured: len=%zu %.48s...\n", len, sig);
+                    if (sf) { std::fprintf(sf, "%llu\t%.*s\n", (unsigned long long)t_ms, (int)len, sig); std::fflush(sf); }
+                    ++got;
+                } else {
+                    std::fprintf(stderr, "[sign] sign call %d EMPTY\n", t);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+            }
+            g_in_sign = false;
+            // The signer builds a ms-timestamp string on the heap; scan for it (and its
+            // surrounding context) to read exactly what message the plugin signs.
+            std::fprintf(stderr, "[sign] --- heap timestamp scan (message the signer built) ---\n");
+            scan_heap_for_timestamp(sign_ms);
+            // Dump the modexp-operand snapshot from the first key read: each register +
+            // 256 bytes it points at. Offline we test each buffer as an RSA operand (the
+            // padded message I -> its tail is the signed message).
+            if (g_kcap) {
+                std::string kp = std::string(od) + "\\keyctx.hex";
+                if (std::FILE* kf = std::fopen(kp.c_str(), "w")) {
+                    const char* rn[18] = {"rax","rbx","rcx","rdx","rsi","rdi","rbp","r8","r9",
+                                          "r10","r11","r12","r13","r14","r15","rip","rsp","[rsp]"};
+                    for (int j = 0; j < 18; ++j) {
+                        std::fprintf(kf, "%s %016llx ", rn[j], (unsigned long long)g_kreg[j]);
+                        for (int b = 0; b < 256; ++b) std::fprintf(kf, "%02x", g_kbuf[j][b]);
+                        std::fprintf(kf, "\n");
+                    }
+                    std::fclose(kf);
+                    std::fprintf(stderr, "[sign] captured modexp operand snapshot -> %s\n", kp.c_str());
+                }
+            }
+            std::fprintf(stderr, "[sign] plugin span %p..%p; verify 0x22f160=%ld  KEY-READ total=%ld  ext(real-code)=%ld  captured_rip=%p\n",
+                         (void*)g_pl_base, (void*)g_pl_end, g_ghits[1], g_ghits[3], g_ghits[2],
+                         (void*)(g_kcap ? g_kreg[15] : 0));
+            if (const char* pf = arg_value(argc, argv, "--prime-file", nullptr); pf && pf[0]) {
+                std::fprintf(stderr, "[sign] --- app-key residency AFTER sign ---\n");
+                scan_known_primes(pf);
+            }
+            // Identify the crypto module (the one the key-read rip lives in) and resolve
+            // OpenSSL sign exports -- if EVP_PKEY_sign et al. are exported, we can BP them
+            // directly next run and read the exact message/tbs the plugin signs.
+            {
+                HMODULE mods[512]; DWORD cb = 0;
+                if (EnumProcessModules(GetCurrentProcess(), mods, sizeof mods, &cb)) {
+                    int nm = (int)(cb / sizeof(HMODULE));
+                    const char* fns[] = { "EVP_PKEY_sign", "EVP_DigestSign", "EVP_DigestSignInit",
+                                          "RSA_sign", "RSA_private_encrypt", "EVP_PKEY_sign_init",
+                                          "EVP_PKEY_CTX_new", "OSSL_PARAM_construct_end" };
+                    for (int i = 0; i < nm; ++i) {
+                        MODULEINFO mi{}; char nmz[MAX_PATH] = {0};
+                        GetModuleInformation(GetCurrentProcess(), mods[i], &mi, sizeof mi);
+                        GetModuleBaseNameA(GetCurrentProcess(), mods[i], nmz, sizeof nmz);
+                        uint64_t b = (uint64_t)mi.lpBaseOfDll, e = b + mi.SizeOfImage;
+                        if (g_gra[3] && g_gra[3] >= b && g_gra[3] < e)
+                            std::fprintf(stderr, "[sign] *** key-read rip in module %s (base %p, +%#llx)\n",
+                                         nmz, (void*)b, (unsigned long long)(g_gra[3] - b));
+                        for (const char* fn : fns)
+                            if (FARPROC pr = GetProcAddress(mods[i], fn))
+                                std::fprintf(stderr, "[sign] export %-22s = %s+%#llx\n", fn, nmz,
+                                             (unsigned long long)((uint64_t)pr - b));
+                    }
+                }
+            }
+            g_force_idx = -1;
+            CONTEXT dc{}; dc.ContextFlags = CONTEXT_DEBUG_REGISTERS; GetThreadContext(GetCurrentThread(), &dc);
+            dc.Dr7 = 0; dc.ContextFlags = CONTEXT_DEBUG_REGISTERS; SetThreadContext(GetCurrentThread(), &dc);
+            if (veh) RemoveVectoredExceptionHandler(veh);
+            if (did_flip) bbl::disarm_verdict_flip();
+        }
+        if (sf) std::fclose(sf);
+        std::fprintf(stderr, "[sign] captured %d sign(s) -> %s\n", got, outpath.c_str());
+        if (broker_up) { TerminateProcess(broker_pi.hProcess, 0); CloseHandle(broker_pi.hProcess); CloseHandle(broker_pi.hThread); }
+        return got > 0 ? 0 : 1;
+    }
+
     bool ok = false;   // must default false: a mode that doesn't set it must NOT print a false SUCCESS
     if (has_flag(argc, argv, "--find-verdict")) {
         // DR-breakpoint diagnostic: drive the sign path so the verification code +
@@ -1139,7 +1938,7 @@ int main(int argc, char** argv) {
             ok = false;
             // Also capture the cloud APP key (the create_task signer, modulus given
             // via --app-key-sweep) at the SAME gated sign moment. The enc_msg cloud
-            // command sign uses the app key (cert_id 00000000), so its p/q are the
+            // command sign uses the app key, so its p/q are the
             // ones resident during the sign; validating against the app modulus with
             // EMPTY envelopes accepts on p*q==N alone (validate_envelopes 0==0).
             const char* akm = arg_value(argc, argv, "--app-key-sweep", nullptr);
@@ -1205,7 +2004,8 @@ int main(int argc, char** argv) {
         // the log. Drive a bit first so the log has fresh content and the key is
         // materialised.
         for (int i = 0; i < 60; ++i) trigger_fn(&sctx);
-        ok = (bbl::find_log_key(lk) == 0);
+        const char* ko = arg_value(argc, argv, "--key-out", nullptr);
+        ok = (bbl::find_log_key(lk, ko) == 0);
     } else if (has_flag(argc, argv, "--find-config-key")) {
         // Recover the plugin's AES-128-ECB CONFIG key (network_engine.key,
         // i4crL3LESLnWapLS) BLIND from live memory, using BambuNetworkEngine.conf
@@ -1215,6 +2015,62 @@ int main(int argc, char** argv) {
         const char* cf = arg_value(argc, argv, "--find-config-key", nullptr);
         if (cf && cf[0] == '-') cf = nullptr;   // bare flag -> default path inside
         ok = (bbl::find_config_key(cf, out) == 0);
+    } else if (has_flag(argc, argv, "--find-app-identity")) {
+        // Recover THIS account's app_identity ("GLOF<digits>-<hex...>") from the
+        // plugin's live memory. It materialises when the plugin builds a get_app_cert
+        // request, so drive the cloud session until it appears (get_app_cert runs
+        // upstream of the verification check, so no printer sign is needed). Write it
+        // to --out for the app-cert fetch step. No cloud secret is reproduced.
+        std::string aid;
+        for (int i = 0; i < 60 && aid.empty(); ++i) {
+            trigger_fn(&sctx);
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            aid = bbl::scan_app_identity();
+        }
+        if (!aid.empty()) {
+            std::fprintf(stderr, "[app-identity] recovered %s\n", aid.c_str());
+            FILE* f = std::fopen(out, "wb");
+            if (f) { std::fwrite(aid.data(), 1, aid.size(), f); std::fclose(f); }
+            ok = true;
+        } else {
+            std::fprintf(stderr, "[app-identity] not found in plugin memory\n");
+            ok = false;
+        }
+    } else if (has_flag(argc, argv, "--extract-appkey")) {
+        // Per-user app-key extractor. get_app_cert runs on the cloud session and
+        // decrypts THIS account's app RSA private key into the plugin heap (the
+        // decrypt routine is obfuscated, but the plaintext key + app cert +
+        // app_identity all land in the heap). Settle so they are resident, then
+        // snapshot heap+image. assemble_appkey.py turns the snapshot into
+        // app_key.pem + app_cert_id.txt + app_identity.txt for the OSS plugin --
+        // no cloud secret is reproduced; it just reads this account's own key.
+        const char* od = arg_value(argc, argv, "--out", "appkey_out");
+        CreateDirectoryA(od, nullptr);
+        // Always snapshot the heap first -- the app cert (modulus + cert_id) and
+        // app_identity are resident after get_app_cert (used to derive N + metadata).
+        std::fprintf(stderr, "[extract] settling cloud session so get_app_cert runs...\n");
+        for (int i = 0; i < 12; ++i) { trigger_fn(&sctx); std::this_thread::sleep_for(std::chrono::milliseconds(400)); }
+        int rc = bbl::dump_plugin_regions(od);
+        std::fprintf(stderr, "[extract] cert/app_identity snapshot -> %s (rc=%d)\n", od, rc);
+        // If the modulus is supplied, ALSO loop-sweep the heap for the app key's
+        // p/q (they materialise while the key is in use). N comes from the cert in
+        // the snapshot (assemble_appkey.py derives it, then re-invokes with --modulus).
+        ok = (rc == 0);
+        const char* mod = arg_value(argc, argv, "--modulus", nullptr);
+        if (mod && mod[0] && mod[0] != '-') {
+            // The sweep was PRE-ARMED before get_app_cert (see after handle.init()),
+            // so it was already looping through the decrypt window. Keep driving so
+            // get_app_cert re-fires (more decrypt windows) and wait for a hit.
+            std::string pqout = std::string(od) + "\\app_key_pq.txt";
+            std::fprintf(stderr, "[extract] waiting for app-key p/q (sweep pre-armed)...\n");
+            for (int i = 0; i < 120 && !bbl::app_key_sweep_found(); ++i) {
+                trigger_fn(&sctx);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            bbl::stop_app_key_sweep();
+            ok = bbl::app_key_sweep_found();
+            std::fprintf(stderr, "[extract] app-key p/q %s -> %s\n", ok ? "FOUND" : "NOT FOUND", pqout.c_str());
+        }
     } else {
         ok = bbl::blind_extract(out, trigger_fn, &sctx, embedded_test_envelopes(),
                                 SLICER_PUBLIC_N_HEX, attempts);
@@ -1225,8 +2081,9 @@ int main(int argc, char** argv) {
         CloseHandle(broker_pi.hProcess); CloseHandle(broker_pi.hThread);
     }
 
-    const char* what = has_flag(argc, argv, "--find-config-key") ? "recovered config key (network_engine.key)"
-                     : has_flag(argc, argv, "--find-log-key")    ? "recovered debug-log key"
+    const char* what = has_flag(argc, argv, "--find-config-key")  ? "recovered config key (network_engine.key)"
+                     : has_flag(argc, argv, "--find-log-key")     ? "recovered debug-log key"
+                     : has_flag(argc, argv, "--find-app-identity") ? "recovered app_identity"
                      : "validated slicer key";
     if (ok) std::fprintf(stderr, "[host] *** SUCCESS: %s -> %s ***\n", what, out);
     else    std::fprintf(stderr, "[host] extraction failed\n");

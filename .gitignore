@@ -43,3 +43,31 @@ win/broker/*.dll
 
 # Editor / session scratch
 .claude/
+
+# --- Recovered key material, per-user artifacts & live captures — never commit ---
+# Private keys anywhere (public server pubkey/service cert under docs/ are re-allowed below)
+*.pem
+*.der
+app_key*
+network_engine_key.txt
+*_key.txt
+result.json
+# nested copies of the token-bearing cloud config (root rule above is anchored)
+**/BambuNetworkEngine.conf
+# app-key / slicer-key extractor runtime output trees (raw process memory + keys)
+win/extractor/appkey_out/
+win/extractor/appkey_snapshot/
+win/extractor/meta_out/
+win/extractor/meta_out2/
+win/extractor/pqtest/
+win/extractor/pqtest2/
+**/snapshot/
+**/*.bin
+# capture side-channel logs
+*tap*.log
+rng_tap.log
+aes_tap.log
+appcert*.log
+# re-allow the two PUBLIC crypto artifacts (server public key + service X.509 cert)
+!docs/get_app_cert_server_pubkey.pem
+!docs/get_app_cert_service_bambulab_cert.pem

@@ -624,8 +624,8 @@ static void stop_rearm() {
 // The armed BP sits on a `jnz <verified>` (75/0f85) that follows `test al,al`.
 // Least-invasive approach: clear ZF so the jnz naturally takes the verified edge,
 // then let the trapped instruction execute (RF set). We do NOT move RIP or touch
-// registers -> minimal disturbance of the plugin's hot signing path (moving RIP
-// mid-flow was less stable). Set BBL_FLIP_RIP=1 to fall back to RIP redirect.
+// registers -> minimal disturbance of the plugin's signing path. Set
+// BBL_FLIP_RIP=1 to fall back to RIP redirect.
 static bool g_flip_use_rip = false;
 static LONG CALLBACK flip_veh(EXCEPTION_POINTERS* ep) {
     if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP)

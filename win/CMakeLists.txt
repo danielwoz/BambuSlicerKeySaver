@@ -55,6 +55,15 @@ if(WIN32)
   target_include_directories(verify_fake PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(verify_fake PUBLIC minhook crypt32 wintrust)
 
+  # open-bamboo-networking's get_app_cert client (obn::appcert::fetch) + a WinHTTP
+  # transport shim, so bambu_host retrieves the app cert from the cloud instead of
+  # memory-scanning. Uses the OpenSSL already on the machine (libcrypto only).
+  set(OBN ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/open-bamboo-networking)
+  if(NOT OPENSSL_ROOT_DIR)
+    set(OPENSSL_ROOT_DIR "C:/Program Files/OpenSSL-Win64")
+  endif()
+  find_package(OpenSSL REQUIRED)
+
   add_executable(bambu_host
     host/main.cpp
     host/known_scan.cpp
@@ -64,11 +73,21 @@ if(WIN32)
     host/cloud_tap.cpp
     host/rng_tap.cpp
     host/aes_tap.cpp
+    host/instr_cb.cpp
     host/app_key_sweep.cpp
     host/death_diag.cpp
+    host/dump_regions.cpp
+    host/lan_discover.cpp
+    host/app_cert_fetch.cpp
+    host/obn_http_winhttp.cpp
+    ${OBN}/src/app_cert.cpp
+    ${OBN}/src/json_lite.cpp
+    ${OBN}/src/log.cpp
+    ${OBN}/src/os_compat.cpp
     ${SRC}/bambu/BambuNetworkingPluginHandle.cpp)
-  target_include_directories(bambu_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${SRC})
-  target_link_libraries(bambu_host PRIVATE verify_fake keysaver_core ws2_32 psapi bcrypt ncrypt)
+  target_include_directories(bambu_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${SRC} ${OBN}/include)
+  target_compile_definitions(bambu_host PRIVATE OBN_VERSION_STRING="02.07.01.99")
+  target_link_libraries(bambu_host PRIVATE verify_fake keysaver_core ws2_32 psapi bcrypt ncrypt OpenSSL::Crypto winhttp)
 
   # Standalone AES-128-ECB decoder for the plugin's debug_network_*.log.enc
   # numeric log. Own main().
