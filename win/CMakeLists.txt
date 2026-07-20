@@ -64,6 +64,16 @@ if(WIN32)
   endif()
   find_package(OpenSSL REQUIRED)
 
+  add_executable(fake_broker2 broker/fake_broker2.cpp)
+  target_link_libraries(fake_broker2 PRIVATE
+    ws2_32
+    crypt32
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    ${OPENSSL_STATIC_DEPENDENCIES})
+  set_target_properties(fake_broker2 PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/broker")
+
   add_executable(bambu_host
     host/main.cpp
     host/known_scan.cpp
