@@ -18,6 +18,56 @@ slicer_key.pem
 slicer_pubkey.pem
 network_engine.key
 network_engine_conf*.json
+*slicer_key*
+d_extracted.json
+capture_selftest_key.txt
+slicer_cert_id.txt
+printer_trust/
+
+# Decrypted/plaintext cloud config containing user tokens — never commit
+/BambuNetworkEngine.conf
 
 # plugin runtime debug logs
 log/
+
+# --- Windows port (win/) ---
+# Build/output trees
+win/build/
+win/build2/
+win/build_main/
+win/**/build/
+# Proprietary Bambu plugin binaries and bundled runtime — never commit
+win/plugin_versions/
+win/broker/*.exe
+win/broker/*.dll
+
+# Editor / session scratch
+.claude/
+
+# --- Recovered key material, per-user artifacts & live captures — never commit ---
+# Private keys anywhere (public server pubkey/service cert under docs/ are re-allowed below)
+*.pem
+*.der
+app_key*
+network_engine_key.txt
+*_key.txt
+result.json
+# nested copies of the token-bearing cloud config (root rule above is anchored)
+**/BambuNetworkEngine.conf
+# app-key / slicer-key extractor runtime output trees (raw process memory + keys)
+win/extractor/appkey_out/
+win/extractor/appkey_snapshot/
+win/extractor/meta_out/
+win/extractor/meta_out2/
+win/extractor/pqtest/
+win/extractor/pqtest2/
+**/snapshot/
+**/*.bin
+# capture side-channel logs
+*tap*.log
+rng_tap.log
+aes_tap.log
+appcert*.log
+# re-allow the two PUBLIC crypto artifacts (server public key + service X.509 cert)
+!docs/get_app_cert_server_pubkey.pem
+!docs/get_app_cert_service_bambulab_cert.pem

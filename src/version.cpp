@@ -1,5 +1,8 @@
 #include "version.h"
 #include <sys/stat.h>
+#if defined(_WIN32)
+#  include <sys/types.h>
+#endif
 
 const VersionProfile PROFILES[] = {
     // warmup_s: how long after daemon start to wait before SEIZE.
@@ -18,9 +21,15 @@ const VersionProfile PROFILES[] = {
 };
 
 const VersionProfile* identify_version(const std::string& plugin_path) {
+#if defined(_WIN32)
+    struct _stat64 st{};
+    if (_stat64(plugin_path.c_str(), &st) != 0) return nullptr;
+    uint64_t sz = (uint64_t)st.st_size;
+#else
     struct stat st{};
     if (stat(plugin_path.c_str(), &st) != 0) return nullptr;
     uint64_t sz = (uint64_t)st.st_size;
+#endif
     for (const auto& p : PROFILES) {
         if (!p.tag) break;
         if (p.so_size == sz) return &p;

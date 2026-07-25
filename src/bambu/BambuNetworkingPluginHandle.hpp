@@ -37,6 +37,11 @@ public:
 
     virtual bool agent_ready() const;
 
+    // Raw plugin agent/context pointer (the value returned by create_agent and
+    // passed as arg1 to every plugin export). Exposed for in-process tooling
+    // that needs to reach agent-relative sub-objects directly.
+    void* raw_agent() const;
+
     virtual std::string plugin_version() const;
 
     virtual bool is_user_login() const;
@@ -51,6 +56,16 @@ public:
     virtual int unsubscribe_device(const std::string& dev_id);
     virtual int start_subscribe   (const std::string& module);
     virtual int change_user       (const std::string& user_info);
+
+    // Cloud MQTT session control. start_subscribe("app") brings up the cloud
+    // MQTT connection the plugin uses to publish (and SIGN) device commands;
+    // without it, send_message returns CONNECT_FAILED. refresh_connection
+    // re-establishes a dropped session. raw_is_server_connected() reports the
+    // plugin's own view (not the host override).
+    virtual int  start_subscribe(const std::string& module);
+    virtual int  stop_subscribe (const std::string& module);
+    virtual int  refresh_connection();
+    virtual bool raw_is_server_connected() const;
 
     virtual int publish_to_device(const std::string& dev_id,
                                   const std::string& json_payload,
@@ -174,6 +189,12 @@ public:
     virtual int start_local_print(const LocalPrintParams& params);
 
     virtual int start_sdcard_print(const LocalPrintParams& params);
+
+    // Cloud print (bambu_network_start_print): drives the full cloud pipeline
+    // (POST /project -> upload -> PATCH /project -> POST /my/task). Stage-based
+    // cancel via BAMBU_NET_PRINT_CANCEL_AFTER_STAGE lets a caller abort before or
+    // after create_task fires.
+    virtual int start_cloud_print(const CloudUploadParams& params);
 
     virtual bool is_local_connected() const;
 

@@ -1,0 +1,668 @@
+1	peer_t
+2	cmdtype
+3	cmdtype
+4	UTC
+5	cmdtype
+7	cmdtype
+10	error = {}
+13	file is empty
+15	TunnelMqtt: can not find function {}
+22	https://api.bambulab.cn/
+32	true
+40	MD5
+60	user_check_report: body = {}, status = {}
+85	print_job, get_user_upload error = {}, body = {}, status = {}
+86	Tracking get_url = {}
+87	get_user_track_url error = {}, body = {}, status = {}
+88	get_profile_3mf failed!, status={}, body={}, error={}
+89	get subtask info ok!
+90	get_subtask_info failed! status={}, body={}, error={}
+91	post_task failed!, status={}, body={}, error={}
+92	get_task_info failed!, status={}, body={}, error={}
+93	get_task info failed! body={}, error = {}, status = {}
+94	get_task info failed! body={}
+95	get_task info failed! body={}, error={}, status={}
+96	on_subtask_report, body = {}, error = {}, status = {}
+97	enc_msg: get_camera_url, dev_id = {} has no encrypt flag info
+98	enc_msg: get_camera_url add extra header
+99	get_camera_ttcode success device {}
+100	get_camera_ttcode info failed! device={} body={} error={} status={}
+101	camera_url_device_resp: device={} error={}
+102	get_machine_version error, body={}, error={}, status={}
+103	get_project_info ok!
+104	get_profile_info id = {}, profile_name = {}
+105	get_profile_info failed! body={}, status={}
+106	get slice info ok!
+107	project_model_id changed from {} to {}
+108	get_project_info failed! body={}, status={}
+109	get_my_profile
+110	get_my_profile failed!, status={}, body={}, error={}
+111	post_user_ticket
+112	post_user_ticket failed!, status={}, body={}, error={}
+113	print_job: post_body_str = {}
+114	enc_msg: post_task add extra header
+115	get_ticket failed!, status={}, body={}, error={}
+116	post_ticket failed!, status={}, body={}, error={}
+117	get_my_setting failed!, status={}, body={}, error={}
+118	unsupported country_code={}, use default server host
+119	region update iot = {}
+120	region update api = {}
+121	region update mqtt = {}
+122	region update tutk = {}
+123	region update base domain = {}
+124	region update environment = {}
+125	region update wifi_code = {}
+126	region update design = {}
+127	get_setting_list failed!, status={}, body={}, error={}
+128	get_setting {}
+129	get_setting failed!, status={}, body={}, error={}
+130	request setting id, body={}
+131	error = {}, body = {}, code = {}
+132	put setting success!
+133	error={}, body={}, code={}
+134	del setting success!
+135	del_setting failed, error={}, body={}, code={}
+136	request_refreshtoken success
+137	request_refreshtoken failed, error={}, body={}, status={}
+138	refresh_token: need new access token, left time = {}
+139	refresh_token: request refresh_token failed
+140	refresh_token: do not need new access token, left time = {}
+141	refresh_token: do not need new refresh token
+142	set host to {}
+143	login_bind_test: start bind dev_ip = {0}
+144	login_bind: use openssl
+145	login_bind_test: create socket failed
+146	login_bind: local connect failed! retry_times = {}
+147	login_bind_test: short msg test {} success
+148	login_bind_test: short msg test {} failed
+149	login_bind_test: normal msg test {} success
+150	login_bind_test: long msg test {} success
+151	enc_msg: start_ping_bind add extra header
+152	start_ping_bind failed!, status={}, body={}, error={}
+153	bind_detect: start bind dev_ip = {}
+154	bind_detect: use openssl
+155	bind_detect: local connect failed!
+156	bind_detect: send login request failed, str = {}, result={}
+157	bind_detect: json_str = {}
+158	bind_detect: recv login_report, rev_count = {}
+159	bind_detect: The device is unresponsive
+160	login_bind: start bind dev_ip = {}
+161	login_bind: local connect failed!
+162	login_bind: send login request failed, str = {}, result={}
+163	login_bind: json_str = {}
+164	login_bind: recv login_report, rev_count = {}
+165	login_bind: get ticket failed reson_error = {} reson_err_code = {}
+166	login_bind: timeout to get ticket from printer
+167	login_bind: http_code = {}, http_body = {}
+168	login_bind: recv json ok
+169	login_bind: bind failed reason = {}
+170	login_bind: recv wait_auth, rev_count = {}
+171	login_bind: timeout to receive login_report
+172	reach multi machine device limit
+173	enc_msg: post_task, dev_id = {} has no encrypt flag info
+174	print_job: start request project id
+175	print_job: request project id failed. code = {}, http_body = {}
+176	print_job: get project id = {}
+177	print_job: get profile id = {}
+178	print_job: start to uploading...
+179	print_job: canceled by user
+180	print_job: uploading failed, check md5 failed
+181	print_job: uploading is failed
+182	print_job: put notification error, http_body={}
+183	print_job: get_notification timeout
+184	print_job: invalid result
+185	print_job: print 3mf is not exists
+186	print_job: get_user_upload failed
+187	print_job: user_upload url = {}
+188	print_job: upload_3mf(withgcode) md5 = {}
+189	print_job: file over size
+190	print_job: file is not exists
+191	print_job: upload_file_to_oss failed, http_body={}
+192	print_job: patch project failed, http_body={}
+193	print_job: post_task failed, http_body={}
+194	print_job: wait_printer failed, job_info = {}
+195	print_job: sending finished
+196	send_job: start_send_gcode_to_sdcard
+197	send_job: canceled by user
+198	send_job: verify ok, body = {}
+199	send_job: verify failed, status={}, error={}
+200	send_job: ftp upload failed, status={}, error={}
+201	send_job: uploading failed, login denied
+202	send_job: uploading failed, wrong ip address
+203	send_job: uploading failed, fail to write to file
+204	send_job: uploading failed
+205	send_job: sending finished
+206	print_job: start_local_print_with_record
+207	print_job: project name = {}, task_name = {}
+208	print_job: ftp upload failed, status={}, error={}
+209	print_job: uploading failed, login denied
+210	print_job: uploading failed
+211	print_job: create cloud task record failed
+212	print_job: local_print_job, start local print
+213	print_job: local_print_job, file over size
+214	printer has emmc, try sending to emmc firstly
+215	sending to emmc success, file = {}
+216	sending to emmc failed, ec = {}, reason = {}
+217	print_job: json = {}
+218	print_job: local send failed
+219	print_job: local_cli publish, exception={}
+220	print_job: request project id
+221	print_job: request project id failed. code = {}, http_body={}
+222	print_job: over size
+223	print_job: put notification error, res = {}
+224	print_job: get notification cancel
+225	print_job: get notification timeout
+226	print_job: get notification error, res = {}
+227	print_job: get_notification error, info={}
+228	print_job: patch project failed
+229	print_job: get my setting failed
+230	print_job: upload_file_to_oss failed, url = {}, http_body={}
+231	print_job: upload_file_to_oss ok. url = {}
+232	print_job: upload_file_to_oss ok
+233	print_job: history open false
+234	post_task, dev_id = {} has no encrypt flag info
+235	print_job: post my task error, result = {}
+236	publish_job: get_design_info error, code = {}, body = {}
+237	publish_job: publish project = {}
+238	publish_job: request_project_profile_id failed, code = {}, body = {}
+239	publish_job: canceled by user
+240	publish_job: file {} is not eixsts
+241	publish_job: uploading failed, check md5 failed
+242	publish_job: uploading is failed
+243	publish_job: put notification error, http_body={}
+244	publish_job: get_notification timeout
+245	publish_job: invalid result
+246	publish_job: jump url
+247	put_model_mall_rating failed code = {}, error = {}
+248	get_model_instance_id failed code = {}, error = {}
+249	get_model_rating_id failed code = {}, error = {}
+250	get_oss_config failed code = {}, error = {}
+251	Exception parsing config to json
+252	open file {} is failed
+253	upload rating picture error = {}, body = {}, status = {}
+254	get_track_key failed code = {}, error = {}
+255	set_server_callback
+256	cert name length {}
+257	CertGetNameString failed.
+258	Unable to allocate memory for Issuer Name.
+259	CertGetCertificateContextProperty failed with {}.
+260	CryptBinaryToString failed with {}.
+261	can not convert file time to system.
+262	cert issuer name: {}
+263	cert not before date: {}
+264	cert not after date: {}
+265	signer count: {}, signer number: {}
+266	cert sign date: {}
+267	found no date.
+268	subject name {}
+269	subject name {} not valid
+270	subject name's size {} too long, skipped
+271	get Certificate Subject failed
+272	serial number: {}
+273	serial number {} not valid
+274	get cert serial number failed
+275	isser name {} not valid
+276	get issuer name failed
+277	cert hash: {}
+278	cert hash {} not valid
+279	get cert hash failed
+280	sign_main_date year {}, month {}, day {}
+281	cert not before date: {}, valid
+282	cert not before date: {}, invalid
+283	get from time failed
+284	cert not after date: {}, valid
+285	cert not after date: {}, invalid
+286	get to time failed
+287	counter signer count: {}, signer number: {}
+288	size {} too long, skipped
+289	InitCryptProviderStructs failed
+290	verify main enter: {}
+291	verify main: no signature found.
+292	verify main: can not access file.
+293	verify main: bad digest.
+294	verify main: provider unknown.
+295	verify main: got error {}
+296	verify main, close error, hResult {}
+297	verify main exit: {}, status {}
+298	verify subs enter: {}, count {}
+299	verify sub {} error, hResult {}
+300	verify sub {} sucess
+301	verify sub {}, close previous error, hResult {}
+302	verify subs exit: {}, finished
+303	verify all: total {}, subs {}
+304	verify all: total {}, subs 0
+305	verify all: total {} finished
+306	can not found source: ret {}
+307	file_name {}, length returned {}, size_needed {}, src wcslen {}
+308	total signatures {}, sub signatures {}
+309	verify signature returns {}
+310	WinVerifyTrust, return error {}
+311	data {}: {}
+312	cert {}, issuer {} mismatch
+313	cert {}, sub_name {} mismatch
+314	cert {}, serial_number {} mismatch
+315	cert {}, start date {} mismatch
+316	cert {}, end date {} mismatch
+317	found a valid cert to index {}
+318	can not found handle for {}
+319	can not found path for {}: ret {}
+320	dll data {}: {}
+321	dll subject {} not the same with {}
+322	dll serial number {} not the same with {}
+323	dll isser {} not the same with {}
+324	dll start date {} not the same with {}
+325	dll end date {} not the same with {}
+326	can not get sign for dll
+327	i {}, j {}: {}
+328	init log
+329	nativeMachine {}, running_on_arm64 {}
+330	can not get native machine from system
+331	can not running on windows amd64.
+332	{} , version {}, log start time {}
+333	{} , authenticate begins
+334	{} , authenticate finished, return value: {}
+335	{} , authenticate finished
+336	{} , not public version, skip authenticate step
+337	{} , json to upload: {}
+338	{} , json process exception: {}
+339	{} , connect_server returned error:{}
+340	{} , send_message returned error:{}
+341	{} , connect_printer returned error: {}
+342	{} , disconnect_printer returned error: {}
+343	{} , send_message_to_printer returned error: {}
+344	{}, bambu_network_get_my_token returned error:{}
+345	{}, start_bind returned error:{}
+346	{}, start_ping_bind returned error:{}
+347	{}, start_bind_detect returned error:{}
+348	{}, start_unbind returned error:{}
+349	{}, set_server_callback error:{}
+350	{}, start_print returned error:{}
+351	{}, start_local_print_with_record returned error:{}
+352	{}, start_send_gcode_to_sdcard returned error:{}
+353	{}, start_local_print returned error:{}
+354	{}, start_sdcard_print returned error:{}
+355	{}, put_setting returned error:{}
+356	{}, get_setting_list returned error:{}
+357	{}, delete_setting returned error:{}
+358	{}, get_user_print_info returned error:{}
+359	{}, bambu_network_get_user_tasks returned error:{}
+360	{}, bambu_network_update_cert returned error:{}
+361	{}, get_printer_firmware returned error:{}
+362	{}, query_bind_status returned error:{}
+363	{}, modify_printer_name returned error:{}
+364	{}, get_model_publish_url returned error:{}
+365	{}, get_model_mall_home_url returned error:{}
+366	{}, get_model_mall_detail_url returned error:{}
+367	{}, get_user_info returned error:{}
+368	{}, request_bind_ticket returned error:{}
+369	{}, track event returned error:{}
+370	{}, track_remove_files returned error:{}
+371	{}, track header returned error:{}
+372	{}, track update property returned error:{}
+373	{}, track get property returned error:{}
+374	{}, put_model_mall_rating returned error:{}
+375	{}, get_model_instance_id returned error:{}
+376	{}, bambu_network_get_oss_config returned error:{}
+377	{}, bambu_network_put_rating_picture_oss returned error:{}
+378	{}, bambu_network_del_rating_picture_oss returned error:{}
+379	{}, bambu_network_get_model_mall_rating returned error:{}
+380	enc_msg: verify_image cost: {} ms
+381	app_private_key is nullptr
+382	get_device_security_sign, failed
+383	enc_msg: add_sign_info json is empty, dev_id = {}
+384	not received device cert
+385	enc_msg: sign_string_internal failed!
+386	enc_msg: Start Verify server ret
+387	enc_msg: Verify server ret
+388	enc_msg: Verify server ret failed
+389	enc_msg: enc_sign: X509_get_pubkey failed!
+390	load_device_pub_key success
+391	enc_msg: unsigned studio
+392	enc_msg:filter_security_flag: dev_id = {} parse fun = {}
+393	enc_msg: reinstall_app_key dev_id = {}
+394	enc_msg: change from receiving to received flag
+395	enc_msg: mqtt_cmd_cert_request invalid app cert and key
+396	enc_msg: mqtt_cmd_cert_request, dev_id = {}
+397	enc_msg:mqtt_cmd_cert_report, dev = {}
+398	enc_msg: not a security command
+399	enc_msg: sequence_id_str is empty
+400	enc_msg: security_seq mismatch sequence_int = {}, need id = {}
+401	enc_msg: no printer_cert field in security_cmd
+402	enc_msg: get device pub key ok, dev_id = {}
+403	enc_msg: no command in security
+404	is_certificate_expired, cert is null
+405	is_certificate_expired, X509_get_notBefore or X509_get_notAfter failed
+406	BIO_new_mem_buf failed
+407	PEM_read_bio_X509 failed {}
+408	load_certs_to_store: store is nullptr
+409	load_certs_to_store: BIO_new_mem_buf failed
+410	load_certs_to_store: add cert failed, count={}
+411	load_certs_to_store: no certs loaded
+412	load_certs_to_store: successfully loaded {} certs
+413	err_msg: start to update cert
+414	enc_msg: update_cert_protected: load_server_pub_cert failed!
+415	enc_msg: update_cert_protected: rand bytes for key and iv failed!
+416	enc_msg: update_cert_protected: encrypt_aes_256_gcm failed
+417	enc_msg: get_app_cert failed
+418	update_cert_protected: use embeded string
+419	enc_msg: get_app_cert ok
+420	enc_msg: app_cert is expired
+421	enc_msg: cert is not expired
+422	enc_msg: cert is revoked
+423	enc_msg: crl revoke done
+424	enc_msg: X509_STORE_new failed
+425	enc_msg: load_certs_to_store failed
+426	enc_msg: X509_STORE_CTX_new failed
+427	enc_msg: X509_STORE_CTX_init failed, err={}
+428	enc_msg: verify ok
+429	enc_msg: verify failed, result={}, err_code={}, err_msg={}
+430	enc_msg: update_cert_protected:decrypt_aes_256_gcm failed
+431	load_app_cert:load_cert_from_string failed!
+432	load_app_cert:X509_get_serialNumber failed
+433	load_app_cert:ASN1_INTEGER_to_BN failed
+434	load_app_cert:X509_get_issuer_name failed
+435	load_key_and_cert start
+436	enc_msg: enc_sign: PEM_read_X509 failed!
+437	load_key_and_cert success
+438	enc_msg: load_private_key_from_string failed
+439	enc_msg: load_private_key_from_string app_private_key is nullptr
+440	load_server_pub_cert:load_cert_from_string failed!
+441	enc_msg: load_server_pub_cert ok!
+442	load_server_pub_cert:X509_get_pubkey failed!
+443	load_server_pub_cert:X509_get_serialNumber failed
+444	load_server_pub_cert:ASN1_INTEGER_to_BN failed
+445	load_server_pub_cert:X509_get_issuer_name failed
+446	load_server_pub_cert:cert_serial_id = {}
+447	load_server_pub_cert:server_pub_cert_name = {}
+448	enc_msg: encrypt_string_internal, data is nullptr
+449	enc_msg: encrypt_string_internal no key in device_pub_key_map, dev_id={}
+450	enc_msg: dev_id = {} device_public_key is nullptr
+451	enc_msg: request install now, dev_id = {}
+452	enc_msg: dev_id = {} parse all msg (value changed) enc enable = {} msg = {}
+453	enc_msg: dev_id = {} parse all msg (first time) enc enable = {} msg = {}
+454	enc_msg: get_app_cert not enouph fields, no cert, key or crl
+455	enc_msg: get_app_cert message is not success
+456	enc_msg: get_app_cert invalid
+457	enc_msg: get_app_cert error = {}, body = {}, status = {}
+458	DeviceSubscribeManager: request subscribe cloud device. dev_id = {}
+459	DeviceSubscribeManager: device {} is subscribing by channel {}, do nothing
+460	DeviceSubscribeManager: dev_id {} has existing channels, do nothing
+461	DeviceSubscribeManager: existing cloud channel of dev_id {} will be closed cause of force subscribe
+462	DeviceSubscribeManager: request unSubscribe device. dev_id = {}
+463	DeviceSubscribeManager: stop a pending channel. channel = {}
+464	DeviceSubscribeManager: unSubscribe a existing channel. channel = {}
+465	DeviceSubscribeManager::InternalHandleMessage parse json failed
+466	DeviceSubscribeManager update: dev_id = {}, dev_ip = {}, access_code = {}
+467	DeviceSubscribeManager: request subscribe local device. dev_id = {}
+468	DeviceSubscribeManager: existing local channel of dev_id {} will be closed cause of force subscribe
+469	DeviceSubscribeManager: can't create channel by {}
+470	DeviceSubscribeManager: cloud channel status doesn't support switching to local(uptime too short or ip missing or ...), try later. dev_id = {}
+471	DeviceSubscribeManager: there is an existing local channel. dev_id = {}
+472	DeviceSubscribeManager: start auto create local channel. dev_id = {}
+473	DeviceSubscribeManager: auto create local channel succeeded, check cloud channel later. dev_id = {}
+474	DeviceSubscribeManager: auto create local channel failed, won't retry. dev_id = {}
+475	DeviceSubscribeManager: local or cloud channel missing, stop auto switch. dev_id = {}
+476	DeviceSubscribeManager: status of local channel doesn't support closing cloud channel, retry later. dev_id = {}
+477	DeviceSubscribeManager: start auto close cloud channel of dev_id = {}
+478	DeviceSubscribeManager: local channel doesn't provide data for a long time, switch to cloud. dev_id = {}
+479	GenericSubscriptionManager: request subscribe topic {}
+480	GenericSubscriptionManager: ISubscribeChannel.Subscribe return false, can't subscribe {}
+481	GenericSubscriptionManager: can't create channel by topic {}
+482	GenericSubscriptionManager: request unsubscribe topic {}
+483	GenericSubscriptionManager: request unsubscribe all topics
+484	GenericSubscriptionManager: client closed, channel dead, topic = {}
+485	EVP_CIPHER_CTX_new failed
+486	EVP_EncryptInit_ex gcm failed
+487	EVP_EncryptInit_ex iv failed
+488	EVP_EncryptUpdate failed
+489	EVP_EncryptFinal_ex failed
+490	EVP_CIPHER_CTX_ctrl failed
+491	HTTP: retry with another dns server
+492	error = {}
+493	error = unknown exception
+494	503 error, no need to retry anymore
+495	extra header {} set from outside, skipped
+496	MqttConnectionManager: registerChannel channel = {}
+497	MqttConnectionManager::RegisterChannel, exception={}
+498	MqttConnectionManager: unregisterChannel channel = {}
+499	MqttConnectionManager::UnregisterChannel, exception = {}
+500	MqttConnectionManager::PerformSubscribe client disconnect, self = {}
+501	MqttConnectionManager::PerformSubscribe, self = {}, exception = {}
+502	MqttConnectionManager::PerformSubscribe, self = {}, exception
+503	MqttConnectionManager::PerformUnsubscribe, self = {}, exception = {}
+504	MqttConnectionManager::PerformUnsubscribe, self = {}, exception
+505	MqttConnectionManager::Publish, self = {}, exception = {}
+506	MqttConnectionManager::Publish, self = {}, exception
+507	MqttConnectionManager: Connection(mqtt) OK! self = {}, cli id = {}
+508	MqttConnectionManager: Connection(mqtt) failed! self = {}, return code = {}, reason code = {}, retry= {}
+509	MqttConnectionManager: Connection(mqtt) failed! self = {}, return code = {}, reason code = {}, won't retry any more
+510	MqttConnectionManager create! self = {}
+511	MqttConnectionManager destroy! self = {}, alive channels count = {}
+512	MqttConnectionManager: client disconnect exception, self = {}, exception = {}
+513	MqttConnectionManager: client disconnect exception, self = {}, unknown exception
+514	MqttConnectionManager::OnConnected! self = {}
+515	MqttConnectionManager: start to resubscribe, channel = {}
+516	MqttConnectionManager::OnConnectionLost!, self = {}, cause = {}
+517	MqttConnectionManager::OnMessageDeliveried!, self = {}
+518	MqttConnectionManager::OnAutoReconnection!, self = {}
+519	MqttConnectionManager: connect exception, self = {}, exception = {}
+520	MqttConnectionManager: connect exception, self = {}, unknown exception
+521	MqttSubscribeChannel: local channel closed, topic = {}
+522	MqttSubscribeChannel: cloud channel closed, topic = {}
+523	MqttSubscribeChannel: GetDriver not ready, cant subscribe. channel = {}
+524	MqttSubscribeChannel: called unsubscribe. channel = {}
+525	MqttSubscribeChannel: subscribe failed! channel = {}, extra_info = {}, retrying, retry count = {}
+526	MqttSubscribeChannel: subscribe failed! channel = {}, extra_info = {}, stop retrying, retry count = {}
+527	MqttSubscribeChannel::HandleMessage parse json failed
+528	MqttSubscribeChannel: subscribe channel failure: channel = {}
+529	MqttSubscribeChannel: subscribe channel success: topic = {}
+530	MqttLocalSubscribeChannel: local mqtt client connected, start subscribe. channel = {}
+531	MqttLocalSubscribeChannel: local mqtt client connection failed. channel = {}
+532	MqttLocalSubscribeChannel: local mqtt client start connecting. channel = {}
+533	MqttLocalSubscribeChannel local mqtt client start connecting. topic = {}, ip = {}
+534	MqttLocalSubscribeChannel: local mqtt channel RegisterChannel failed. channel = {}
+535	MqttLocalSubscribeChannel: local mqtt channel GetDriver return nullptr. channel = {}
+536	MqttClientKeeper: reconnect a manager = {}
+537	MqttClientKeeper: reconnect exception = {}
+538	MqttClientKeeper: reconnect exception
+539	MqttClientKeeper: thread exiting
+540	parse_content_json failed! json= {}
+541	parse_content_json failed! json={}
+542	card = {}, ip addr = {}
+543	card = {}, ip addr={}
+544	SsdpDiscovery::parse_sdp_message, exception={}
+545	SsdpDiscovery::parse_sdp_message, exception!
+546	SsdpDiscovery: mismatch packet.st={}
+547	send ssdp msg to card_no={}
+548	ssdp list {} ip = {}, name = {}
+549	ssdp_mac: on_packet_received, packet = {}, size = {}
+550	Network Interface List: {}
+551	SSDP create socket failed {}
+552	level={}, tag={}, msg={}
+553	SsdpDiscovery:start_ssdp with card number = {} {} {}
+554	SsdpDiscovery::start_discover(), create sock 1990 thread {}
+555	SsdpDiscovery::start_discover(), exception={}
+556	SsdpDiscovery::start_discover(), create sock 2021 thread {}
+557	SsdpDiscovery::start_discover(), create broadcast thread {}
+558	ssdp: stop()
+559	SsdpDiscovery::stop_discover(), join sock 1990 thread {}
+560	SsdpDiscovery::stop_discover(), join sock 2021 thread {}
+561	SsdpDiscovery::stop_discover(), join broadcast thread {}
+562	login_bind: send msg = {}
+563	login_bind: send msg_len ={}
+564	login_bind: send result={}
+565	login_bind: received header bytes = {}, retry_count = {}
+566	login_bind: retry_count = {}
+567	login_bind: recv header ssl error = {}
+568	login_bind: recv header error = {}
+569	login_bind: get msg_len = {}
+570	login_bind: bytes_to_read = {}
+571	login_bind: received body bytes = {}, retry_count = {}
+572	login_bind: body recv iResult = 0
+573	login_bind: recv body error = 
+574	login_bind: idx = {}
+575	login_bind: parse msg_len = {}
+576	login_bind: invalid proto format
+577	login_bind: invalid msg_len = {}
+578	login_bind: header is not match, buf 0/1 = {}, {}
+579	login_bind: getaddrinfo failed!
+580	login_bind: socket failed!
+581	login_bind: connect failed!
+582	login_bind: SSL_CTX_new failed!
+583	login_bind: SSL_new failed!
+584	login_bind: SSL_set_fd failed!
+585	login_bind: SSL_connect failed!
+586	login_bind:send failed: {}\\n
+587	login_bind:send length wrong: {}, should be {}.\\n
+588	login_bind: create socket failed!
+589	login_bind: SSL_library_init failed!
+590	send failed: {}\\n
+591	send length wrong: {}, should be {}.\\n
+592	Track: record event={}, content={}
+593	Track: remove failed, do not save file
+594	Track: config dir is empty
+595	Track: tag is empty
+596	Track: save_file to {}
+597	Track: save file to {} failed
+598	Track: create zip file failed
+599	Track: close zip file failed
+600	Track: open file {} or {} failed
+601	Track: encrypt failed
+602	Track: encrypt data = {} success
+603	Track: remove file {} success
+604	Track: remove file {} failed
+605	Track: invalid file format, file = {}
+606	Track: remove failed, do not upload file
+607	Track: get_user_upload failed
+608	Track: upload file is not exists, {}
+609	Track: pop file
+610	Track: upload failed
+611	Track: remove tracking failed
+612	Track: clean_key
+613	Track: create track folder failed
+614	Track: push file
+615	Track: exception when iterate track path
+616	Track: exception when delete file, file = {}
+617	Track: already started
+618	Track: starting...
+619	get_new_encrypt_key failed, retry = {}, sleep = {}
+620	Track: timeout force to save
+621	upload_file failed, retry = {}, sleep = {}
+622	TunnelMqtt::init: tunnel_url: {}
+623	TunnelMqtt::dump_log: exceed m_relay_count: {}
+624	TunnelMqtt: {}
+625	TunnelMqtt::send_request: {}, msg: {}
+626	TunnelMqtt::reconnect: result: {}
+627	TunnelMqtt::reconnect: wake up: {} {}
+628	TunnelMqtt::reconnect: init_url: {}
+629	read file, size = {}
+630	FT: new job created, name = {}, id = {}
+631	FT: job finished, name = {}, id = {}
+632	Bambu_Create return {}
+633	Bambu_Open return {}
+634	DoConnect done, result = 
+635	FT: start read sample
+636	FT: read sample done, itrack = {}, size = {}, flags = {}
+637	FT: start write sample, size = {}
+638	FT: write sample done
+639	start connecting tunnel
+640	FT: job cancel, name = {}, id = {}
+641	parse nozzle mapping failed
+642	report_consent error: JSON is not an object
+643	report_consent error: JSON missing has_consent field
+644	report_consent!,  data={}
+645	report_consent success
+646	report_consent failed!, status={}, body={}, error={}
+647	{}, start_report_consent returned error:{}
+648	FTJob received: {}
+649	FT: upload chunk size is {} KB
+650	start http request get_task_info
+651	start http request post_task
+652	start http request get_my_tasks
+653	start http request get_ticket
+654	start http request get_tasks
+655	start http request get_model_instance_id
+656	load_app_cert: cert_id is {}
+657	start http request get_app_cert
+658	x-request-id: {}
+659	cloud mqtt state changed to {}, return_code = {}, reason_code = {}
+660	enc_msg: start to update cert
+661	enc_msg: start to get_app_cert
+662	enc_msg: decrypt embeded_app_cert start
+663	enc_msg: decrypt embeded_app_cert end
+664	enc_msg: decrypt embeded_base64_encode_app_pri_key_str start
+665	enc_msg: decrypt embeded_base64_encode_app_pri_key_str end
+666	enc_msg: decrypt embeded_app_crl_str start
+667	enc_msg: decrypt embeded_app_crl_str end
+668	enc_msg: start to load_app_cert
+669	enc_msg: get_app_cert end
+670	enc_msg: start to check cert expiration
+671	enc_msg: decrypt ROOT_CA_STR start
+672	enc_msg: decrypt ROOT_CA_STR end
+673	enc_msg: start to verify app cert
+674	get_camera_ttcode info failed! device={} error={} status={}
+675	enc_msg: get_camera_url_for_golive, dev_id = {} has no encrypt flag info
+676	enc_msg: get_camera_url_for_golive add extra header
+677	Track: http upload failed, err = {}, http_code = {}
+678	Track: file {} not exist
+679	Track: cant open file {}
+680	Track: TryUploadEvents failed
+681	Track: upload events succeed
+682	Track: upload events failed
+683	Track: save as file
+684	Track: failed to save as file
+685	Track: do start
+686	Track: worker interrupted
+687	Track: worker unknown exception
+688	Track: not running, doesn't need stopping
+689	get_device_file_download: failed to parse from response body
+690	sign cost: {}us
+691	SecureEncrypt fail: {}
+692	load app_key_blob, blob_size = {}
+693	test sign fail: res = {}
+694	test encrypt fail: res = {}
+695	get snapshot failed!, status={}, error={}
+696	get snapshot link failed!, status={}, body={}, error={}
+697	start http request get_filament_spools
+698	get_filament_spools failed!, status={}, body={}, error={}
+699	start http request create_filament_spool
+700	create_filament_spool failed!, status={}, body={}, error={}
+701	start http request update_filament_spool, spool_id={}
+702	update_filament_spool failed!, status={}, body={}, error={}
+703	start http request delete_filament_spools
+704	delete_filament_spools failed!, status={}, body={}, error={}
+705	start http request get_filament_config
+706	get_filament_config failed!, status={}, body={}, error={}
+707	{}, bambu_network_get_filament_spools returned error:{}
+708	{}, bambu_network_create_filament_spool returned error:{}
+709	{}, bambu_network_update_filament_spool returned error:{}
+710	{}, bambu_network_delete_filament_spools returned error:{}
+711	{}, bambu_network_get_filament_config returned error:{}
+712	candidate host: {}
+713	http_perform using host: {}
+715	HTTP: attempt failed (curl {}), removing host {}
+716	HTTP: attempt failed (http {}), removing host {}
+718	login_bind: recv body error = {}
+719	FTIntf io thread exception: {}
+720	FTIntf io thread unknown exception
+721	FTIntf cb_io thread exception: {}
+722	FTIntf cb_io thread unknown exception
+723	ft_tunnel_start_connect: invoking conn_cb, ok={}, err_code={}
+724	ft_tunnel_start_connect: conn_cb is null, skipped
+725	ft_tunnel_set_status_cb: status_cb is null, skipped (old={} new={})
+726	ft_tunnel_set_status_cb: invoking status_cb, old={} new={} err={}
+727	ft_tunnel_start_job: invoking result_cb
+728	ft_tunnel_start_job: result_cb is null, skipped
+729	ft_tunnel_start_job: invoking msg_cb
+730	ft_tunnel_start_job: msg_cb is null, skipped
+731	Null creator for cmd_type: {}
+732	FTTunnel connect thread exception: {}
+733	FTTunnel connect thread unknown exception
+734	JobCtl::AddCompletionCb: cb is null, ignored
+735	JobCtl::AddCompletionCb: invoking completion cb (already-done path)
+736	JobCtl::AddCompletionCb: cb became null before post, skipped
+737	JobCtl::Complete: skipping null cb in cbs_ list
+738	JobCtl::Complete: invoking completion cb
+739	JobCtl::Complete: cb became null before post, skipped
+1180	verify main exit: {}, status {}
+4096	cmdtype
