@@ -15,12 +15,19 @@
 
 #if defined(_WIN32)
 #  include <windows.h>
+#  include <psapi.h>
 #else
 #  include <dlfcn.h>
 #endif
 
 namespace Slic3r {
 namespace bambu {
+
+// Plugin-image return-address frames recorded the first time the plugin pushes
+// the 'unsigned_studio' control message. Empty until that message is seen;
+// populated in the on_message callback below and read by the host tooling.
+std::vector<unsigned long long> g_unsigned_studio_plugin_frames;
+bool                            g_unsigned_studio_captured = false;
 
 namespace {
 
@@ -41,6 +48,10 @@ extern "C++" {
                                                  std::vector<std::string> dev_list);
     using func_del_subscribe         = int   (*)(void* agent,
                                                  std::vector<std::string> dev_list);
+    using func_start_subscribe       = int   (*)(void* agent, std::string module);
+    using func_change_user           = int   (*)(void* agent, std::string user_info);
+    using func_stop_subscribe        = int   (*)(void* agent, std::string module);
+    using func_refresh_connection    = int   (*)(void* agent);
     using func_send_message_to_print = int   (*)(void* agent,
                                                  std::string dev_id,
                                                  std::string json_str,
@@ -315,6 +326,10 @@ struct BambuNetworkingPluginHandle::Impl {
     func_get_user_print_info   get_user_print_info   = nullptr;
     func_add_subscribe         add_subscribe         = nullptr;
     func_del_subscribe         del_subscribe         = nullptr;
+    func_start_subscribe       start_subscribe_fn    = nullptr;
+    func_change_user           change_user_fn        = nullptr;
+    func_stop_subscribe        stop_subscribe        = nullptr;
+    func_refresh_connection    refresh_connection    = nullptr;
     func_send_message_to_print send_message_to_print = nullptr;
     func_set_on_message_fn     set_on_message_fn     = nullptr;
     func_set_on_server_conn_fn set_on_server_conn_fn = nullptr;
@@ -404,6 +419,10 @@ struct BambuNetworkingPluginHandle::Impl {
         get_user_print_info   = lib.sym<func_get_user_print_info>  ("bambu_network_get_user_print_info");
         add_subscribe         = lib.sym<func_add_subscribe>        ("bambu_network_add_subscribe");
         del_subscribe         = lib.sym<func_del_subscribe>        ("bambu_network_del_subscribe");
+        start_subscribe_fn    = lib.sym<func_start_subscribe>      ("bambu_network_start_subscribe");
+        change_user_fn        = lib.sym<func_change_user>          ("bambu_network_change_user");
+        stop_subscribe        = lib.sym<func_stop_subscribe>       ("bambu_network_stop_subscribe");
+        refresh_connection    = lib.sym<func_refresh_connection>   ("bambu_network_refresh_connection");
 
 
 
@@ -496,6 +515,49 @@ struct BambuNetworkingPluginHandle::Impl {
 
         if (set_on_message_fn) {
             on_message_cb = [self](std::string dev_id, std::string msg) {
+                // The app-message callback carries BOTH device reports (JSON,
+                // large) AND short control strings like "device_cert_installed"
+                // / "device_cert_uninstalled" that signal the security context
+                // is ready for SIGNED privileged commands. Log the control
+                // strings so the host can gate signing on them.
+                if (msg.size() < 64 && msg.find('{') == std::string::npos) {
+                    std::fprintf(stderr, "[plugin-msg] control dev=%s msg='%s'\n",
+                                 dev_id.c_str(), msg.c_str());
+                    std::fflush(stderr);
+                }
+#if defined(_WIN32)
+                // One-shot: the first time the 'unsigned_studio' message arrives,
+                // record the current stack's return addresses. Frames inside the
+                // plugin image are kept for the host; the rest are logged only.
+                if (msg == "unsigned_studio") {
+                    static bool once = false;
+                    if (!once) {
+                        once = true;
+                        void* frames[32] = {0};
+                        USHORT n = RtlCaptureStackBackTrace(0, 32, frames, nullptr);
+                        HMODULE hp = GetModuleHandleA("bambu_networking.dll");
+                        uintptr_t pbase = (uintptr_t)hp;
+                        uintptr_t pend = 0;
+                        { MODULEINFO mi{}; if (hp && GetModuleInformation(GetCurrentProcess(), hp, &mi, sizeof mi)) pend = pbase + mi.SizeOfImage; }
+                        std::fprintf(stderr, "[stackwalk] plugin base=0x%llx end=0x%llx\n",
+                                     (unsigned long long)pbase, (unsigned long long)pend);
+                        std::fprintf(stderr, "[stackwalk] unsigned_studio push back-trace (%u frames):\n", n);
+                        for (USHORT i = 0; i < n; ++i) {
+                            uintptr_t f = (uintptr_t)frames[i];
+                            bool inplug = pbase && f >= pbase && f < pend;
+                            if (inplug) {
+                                std::fprintf(stderr, "[stackwalk]   #%u 0x%llx  PLUGIN rva=0x%llx\n",
+                                             i, (unsigned long long)f, (unsigned long long)(f - pbase));
+                                g_unsigned_studio_plugin_frames.push_back((unsigned long long)f);
+                            } else {
+                                std::fprintf(stderr, "[stackwalk]   #%u 0x%llx\n", i, (unsigned long long)f);
+                            }
+                        }
+                        g_unsigned_studio_captured = true;
+                        std::fflush(stderr);
+                    }
+                }
+#endif
                 self->dispatch_message(dev_id, msg);
             };
             set_on_message_fn(agent, on_message_cb);
@@ -581,6 +643,11 @@ struct BambuNetworkingPluginHandle::Impl {
                     "(arm enc_msg signing gate)\n",
                     topic_str.c_str(), dev.c_str());
                 std::fflush(stderr);
+                if (std::getenv("BAMBU_NO_AUTO_PROVISION")) {
+                    std::fprintf(stderr, "[plugin-cb] auto-provision skipped (env)\n");
+                    std::fflush(stderr);
+                    return;
+                }
                 if (set_user_selected_machine)
                     set_user_selected_machine(agent, dev);
                 if (install_device_cert)
@@ -691,6 +758,10 @@ bool BambuNetworkingPluginHandle::agent_ready() const {
     return m_impl->agent != nullptr && m_impl->started;
 }
 
+void* BambuNetworkingPluginHandle::raw_agent() const {
+    return m_impl ? m_impl->agent : nullptr;
+}
+
 std::string BambuNetworkingPluginHandle::plugin_version() const {
 
 
@@ -702,6 +773,11 @@ std::string BambuNetworkingPluginHandle::plugin_version() const {
 bool BambuNetworkingPluginHandle::is_user_login() const {
     if (!m_impl->agent || !m_impl->is_user_login) return false;
     return m_impl->is_user_login(m_impl->agent);
+}
+
+int BambuNetworkingPluginHandle::connect_server() {
+    if (!m_impl->agent || !m_impl->connect_server) return -1;
+    return m_impl->connect_server(m_impl->agent);
 }
 
 bool BambuNetworkingPluginHandle::is_server_connected() const {
@@ -728,10 +804,38 @@ int BambuNetworkingPluginHandle::subscribe_device(const std::string& dev_id) {
     return m_impl->add_subscribe(m_impl->agent, v);
 }
 
+int BambuNetworkingPluginHandle::start_subscribe(const std::string& module) {
+    if (!m_impl->agent || !m_impl->start_subscribe_fn) return -1;
+    return m_impl->start_subscribe_fn(m_impl->agent, module);
+}
+
+int BambuNetworkingPluginHandle::change_user(const std::string& user_info) {
+    if (!m_impl->agent || !m_impl->change_user_fn) return -1;
+    return m_impl->change_user_fn(m_impl->agent, user_info);
+}
+
 int BambuNetworkingPluginHandle::unsubscribe_device(const std::string& dev_id) {
     if (!m_impl->agent || !m_impl->del_subscribe) return -1;
     std::vector<std::string> v{dev_id};
     return m_impl->del_subscribe(m_impl->agent, v);
+}
+
+int BambuNetworkingPluginHandle::stop_subscribe(const std::string& module) {
+    if (!m_impl->agent || !m_impl->stop_subscribe) return -2;
+    return m_impl->stop_subscribe(m_impl->agent, module);
+}
+
+int BambuNetworkingPluginHandle::refresh_connection() {
+    if (!m_impl->agent || !m_impl->refresh_connection) return -2;
+    int rc = m_impl->refresh_connection(m_impl->agent);
+    std::fprintf(stderr, "[plugin] refresh_connection() rc=%d\n", rc);
+    std::fflush(stderr);
+    return rc;
+}
+
+bool BambuNetworkingPluginHandle::raw_is_server_connected() const {
+    if (!m_impl->agent || !m_impl->is_server_connected) return false;
+    return m_impl->is_server_connected(m_impl->agent);
 }
 
 int BambuNetworkingPluginHandle::publish_to_device(const std::string& dev_id,
@@ -824,8 +928,11 @@ int BambuNetworkingPluginHandle::connect_printer(const std::string& dev_id,
                                                  bool               use_ssl) {
     if (!m_impl->agent)            return -1;
     if (!m_impl->connect_printer)  return -2;
-    return m_impl->connect_printer(m_impl->agent, dev_id, dev_ip,
+    int rc = m_impl->connect_printer(m_impl->agent, dev_id, dev_ip,
                                    username, password, use_ssl);
+    std::fprintf(stderr, "[plugin] connect_printer(dev=%s ip=%s user=%s ssl=%d) rc=%d\n",
+                 dev_id.c_str(), dev_ip.c_str(), username.c_str(), (int)use_ssl, rc);
+    return rc;
 }
 
 int BambuNetworkingPluginHandle::set_user_selected_machine(const std::string& dev_id) {
@@ -858,8 +965,13 @@ int BambuNetworkingPluginHandle::send_message_to_printer(const std::string& dev_
                                                         const std::string& json_payload,
                                                         int                qos) {
     if (!m_impl->agent || !m_impl->send_message_to_print) return -1;
+    // The trailing "flag" arg selects the channel in some plugin builds
+    // (0=auto/LAN-first, non-zero may force cloud). Overridable for the
+    // enc_msg/get_app_cert capture experiment via BAMBU_SEND_FLAG.
+    int flag = 0;
+    if (const char* f = std::getenv("BAMBU_SEND_FLAG")) flag = std::atoi(f);
     return m_impl->send_message_to_print(m_impl->agent, dev_id,
-                                         json_payload, qos, 0);
+                                         json_payload, qos, flag);
 }
 
 namespace {
@@ -988,6 +1100,45 @@ int BambuNetworkingPluginHandle::start_local_print_with_record(
          {},  {},  {});
 }
 
+int BambuNetworkingPluginHandle::start_cloud_print(
+        const LocalPrintParams& params) {
+    if (!m_impl->agent)        return -1;
+    if (!m_impl->start_print)  return -2;
+    PluginPrintParams pp{};
+    copy_gui_fields_into_plugin_params(params, pp, "cloud");
+
+    long cancel_after = 0;
+    if (const char* ca = std::getenv("BAMBU_NET_PRINT_CANCEL_AFTER_STAGE"))
+        cancel_after = std::atol(ca);
+    auto stage_count = std::make_shared<std::atomic<long>>(0);
+    auto t0 = std::chrono::steady_clock::now();
+    long max_ms = 30000;
+    if (const char* mm = std::getenv("BAMBU_NET_PRINT_MAX_MS"))
+        max_ms = std::atol(mm);
+    auto update_fn = [stage_count](int status, int code, std::string msg) {
+        long n = ++(*stage_count);
+        std::fprintf(stderr, "[cloud-print] stage#%ld status=%d code=%d msg=%s\n",
+                     n, status, code, msg.c_str());
+        std::fflush(stderr);
+    };
+    auto cancel_fn = [stage_count, cancel_after, t0, max_ms]() -> bool {
+        bool by_stage = (cancel_after > 0 && stage_count->load() >= cancel_after);
+        bool by_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - t0).count() >= max_ms;
+        if (by_stage || by_time) {
+            std::fprintf(stderr, "[cloud-print] cancel_fn -> true "
+                         "(by_stage=%d by_time=%d stages=%ld)\n",
+                         int(by_stage), int(by_time), stage_count->load());
+            std::fflush(stderr);
+            return true;
+        }
+        return false;
+    };
+    auto wait_fn = [](int, std::string) -> bool { return true; };
+    return m_impl->start_print(m_impl->agent, std::move(pp),
+                               update_fn, cancel_fn, wait_fn);
+}
+
 int BambuNetworkingPluginHandle::start_local_print(
         const LocalPrintParams& params) {
     if (!m_impl->agent)            return -1;
@@ -1046,6 +1197,44 @@ int BambuNetworkingPluginHandle::start_sdcard_print(
          {},  {});
 }
 
+int BambuNetworkingPluginHandle::start_cloud_print(const CloudUploadParams& params) {
+    if (!m_impl->agent)       return -1;
+    if (!m_impl->start_print) return -2;
+    PluginPrintParams pp{};
+    copy_gui_fields_into_plugin_params(params, pp, "cloud");
+    // The genuine cloud start_print reads the upload file from a field other than
+    // `filename` (headless it opened an EMPTY path -> stage-3 "3mf is not exists").
+    // Mirror the local file into the other plausible upload-file fields; the file
+    // trace (BBL_FILE_TRACE) confirms which one the plugin actually opens.
+    if (pp.ftp_file.empty()) pp.ftp_file = params.local_file_path;
+    if (pp.dst_file.empty()) pp.dst_file = params.local_file_path;
+    auto stage_count = std::make_shared<std::atomic<long>>(0);
+    auto t0 = std::chrono::steady_clock::now();
+    long max_ms = 90000;
+    if (const char* mm = std::getenv("BAMBU_NET_PRINT_MAX_MS")) max_ms = std::atol(mm);
+    long cancel_after = 0;
+    if (const char* ca = std::getenv("BAMBU_NET_PRINT_CANCEL_AFTER_STAGE")) cancel_after = std::atol(ca);
+    auto update_fn = [stage_count](int status, int code, std::string msg) {
+        long n = ++(*stage_count);
+        std::fprintf(stderr, "[cloud-print] stage#%ld status=%d code=%d msg=%s\n", n, status, code, msg.c_str());
+        std::fflush(stderr);
+    };
+    auto cancel_fn = [stage_count, cancel_after, t0, max_ms]() -> bool {
+        bool by_stage = (cancel_after > 0 && stage_count->load() >= cancel_after);
+        bool by_time  = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count() >= max_ms;
+        if (by_stage || by_time) {
+            std::fprintf(stderr, "[cloud-print] cancel_fn -> true (by_stage=%d by_time=%d stages=%ld)\n",
+                         int(by_stage), int(by_time), stage_count->load());
+            std::fflush(stderr);
+            return true;
+        }
+        return false;
+    };
+    auto wait_fn = [](int, std::string) -> bool { return true; };
+    return m_impl->start_print(m_impl->agent, std::move(pp), update_fn, cancel_fn, wait_fn);
+}
+
 bool BambuNetworkingPluginHandle::is_local_connected() const {
     if (m_impl->ready_override.load()) return m_impl->local_connected.load();
     if (!m_impl->agent) return false;
@@ -1099,6 +1288,7 @@ void BambuNetworkingPluginHandle::dispatch_local_message(const std::string& dev_
 }
 
 void BambuNetworkingPluginHandle::dispatch_local_connected(bool connected) {
+    std::fprintf(stderr, "[plugin] *** on_local_connect callback: connected=%d ***\n", (int)connected);
     m_impl->local_connected.store(connected);
     std::function<void(int, int)> cb;
     {

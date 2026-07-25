@@ -24,6 +24,9 @@ struct CaptureResult {
     // The fixed AES key that decrypts BambuNetworkEngine.conf, recovered from
     // plugin memory at runtime (empty if not found). Never hardcoded.
     std::vector<uint8_t> conf_key;
+    // The fixed AES key that decrypts debug_network_*.log.enc, recovered from
+    // plugin memory at runtime (empty if not found). Never hardcoded.
+    std::vector<uint8_t> log_key;
 };
 
 // Memory map info for the plugin .so.

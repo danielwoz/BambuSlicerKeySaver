@@ -18,6 +18,9 @@
 #include <net/if.h>
 #include <sys/socket.h>
 
+#include <chrono>
+#include <thread>
+
 namespace Slic3r {
 namespace bambu {
 namespace headless {
@@ -268,6 +271,58 @@ bool App::initialise() {
         if (!m_plugin->init()) {
             m_plugin.reset();
             return false;
+        }
+
+        // App-cert capture hook: once the plugin is up and logged in over the
+        // cloud channel, drive its enc_msg secure-channel path. Subscribing the
+        // (fake, enc-capable) device and then send_message_to_printer makes the
+        // plugin build+sign a cloud command; step 0 of that flow is the
+        // get_app_cert HTTPS fetch, which materialises the account app cert +
+        // key in plugin memory (captured by an external memory scan). No print.
+        if (const char* sdev = std::getenv("BAMBU_NET_FIRE_SEND_DEV");
+            sdev && *sdev && !m_print3mf_started.exchange(true)) {
+            std::string dev = sdev;
+            auto env_or = [](const char* k, const char* d) {
+                const char* v = std::getenv(k); return std::string(v && *v ? v : d);
+            };
+            std::string msg = env_or("BAMBU_NET_FIRE_SEND_MSG",
+                "{\"print\":{\"command\":\"push_status\",\"sequence_id\":\"2001\"}}");
+            int rounds = std::atoi(env_or("BAMBU_NET_FIRE_SEND_ROUNDS", "20").c_str());
+            m_print3mf_thread = std::thread([this, dev, msg, rounds]() {
+                // Wait for the cloud MQTT session before touching the cloud
+                // subscribe/send path — calling it on a null session derefs
+                // (crash observed as pthread_mutex_lock(0x60)).
+                bool connected = false;
+                for (int w = 0; w < 60; w++) {   // up to ~60s
+                    if (m_plugin->is_server_connected()) { connected = true; break; }
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+                std::fprintf(stderr, "[appcert-hook] server_connected=%d after wait\n",
+                             connected ? 1 : 0);
+                std::fflush(stderr);
+                if (!connected) {
+                    std::fprintf(stderr, "[appcert-hook] cloud session never came up; "
+                                 "skipping subscribe/send (would crash)\n");
+                    std::fflush(stderr);
+                    return;
+                }
+                int ss = m_plugin->start_subscribe("app");
+                std::fprintf(stderr, "[appcert-hook] start_subscribe(app) rc=%d\n", ss);
+                int sc = m_plugin->subscribe_device(dev);
+                std::fprintf(stderr, "[appcert-hook] subscribe_device(%s) rc=%d\n",
+                             dev.c_str(), sc);
+                std::fflush(stderr);
+                // Let the device channel establish + uptime accumulate before
+                // sending (DeviceSubscribeManager rejects sends when the cloud
+                // channel isn't connected / uptime is too short).
+                std::this_thread::sleep_for(std::chrono::seconds(12));
+                for (int i = 0; i < rounds; i++) {
+                    int rc = m_plugin->send_message_to_printer(dev, msg, 1);
+                    std::fprintf(stderr, "[appcert-hook] send_message #%d rc=%d\n", i, rc);
+                    std::fflush(stderr);
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+            });
         }
     } else if (m_plugin_injected) {
     } else {

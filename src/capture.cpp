@@ -265,6 +265,74 @@ static std::vector<std::string> scan_for_conf_json(pid_t pid,
 }
 
 
+// Scan the tracee's readable memory for the AES-128-ECB debug-log key.
+// The approach mirrors scan_for_conf_json but uses the encrypted log file as
+// the oracle: for each 16-byte window in plugin memory, try to AES-ECB-
+// decrypt the log's first 48 bytes; keep the window whose plaintext has the
+// highest printable-ASCII ratio.
+static std::vector<uint8_t> scan_for_log_key(pid_t pid,
+                                              const std::vector<uint8_t>& log_ct) {
+    if (log_ct.size() < 48) return {};
+
+    const int TEST = 48;
+    const uint8_t* ct = log_ct.data();
+    uint8_t pt[TEST];
+    int best_score = 0;
+    std::vector<uint8_t> best_key;
+
+    char mpath[64];
+    std::snprintf(mpath, sizeof(mpath), "/proc/%d/maps", (int)pid);
+    std::ifstream f(mpath);
+    if (!f) return {};
+
+    std::vector<std::pair<uint64_t, uint64_t>> regions;
+    std::string line;
+    while (std::getline(f, line)) {
+        size_t dash = line.find('-');
+        size_t sp   = line.find(' ');
+        size_t sp2  = line.find(' ', sp + 1);
+        if (dash == std::string::npos || sp == std::string::npos || sp2 == std::string::npos)
+            continue;
+        std::string perms = line.substr(sp + 1, sp2 - sp - 1);
+        if (perms.size() < 4 || perms[0] != 'r') continue;
+        uint64_t lo = std::stoull(line.substr(0, dash), nullptr, 16);
+        uint64_t hi = std::stoull(line.substr(dash + 1, sp - dash - 1), nullptr, 16);
+        if (hi <= lo || (hi - lo) > (64ull << 20)) continue;
+        regions.push_back({lo, hi});
+    }
+
+    std::vector<uint8_t> buf;
+    for (auto& reg : regions) {
+        uint64_t lo = reg.first, hi = reg.second;
+        size_t rn = (size_t)(hi - lo);
+        buf.assign(rn, 0);
+        for (uint64_t cur = lo; cur < hi; cur += 4096) {
+            size_t want = std::min<uint64_t>(4096, hi - cur);
+            (void)read_tracee_mem(pid, cur, buf.data() + (cur - lo), want);
+        }
+
+        for (size_t o = 0; o + 16 <= rn; o += 4) {
+            AES_KEY dk;
+            if (AES_set_decrypt_key(buf.data() + o, 128, &dk) != 0) continue;
+            AES_decrypt(ct, pt, &dk);
+            int sc = 0;
+            for (int i = 0; i < TEST; ++i) {
+                uint8_t c = pt[i];
+                if (c == '\n' || c == '\r' || c == '\t' || (c >= 0x20 && c < 0x7f)) ++sc;
+            }
+            if (sc > best_score) {
+                best_score = sc;
+                best_key.assign(buf.data() + o, buf.data() + o + 16);
+            }
+            if (sc >= 95) break;
+        }
+        if (best_score >= 95) break;
+    }
+
+    LOG_I("[log-key] scanned %zu regions, best score=%d", regions.size(), best_score);
+    return best_key;
+}
+
 // Scan memory for the byte_load+accumulator pair.
 static uint64_t discover_accumulator_pc(pid_t child, uint64_t lo, uint64_t hi,
                                         uint64_t* discovered_wrap_va,
@@ -784,6 +852,53 @@ CaptureResult drive_capture_attach(pid_t target,
     if (!R.conf_key.empty())
         LOG_I("[conf] recovered %d-bit conf AES key from plugin memory (early)",
               (int)R.conf_key.size() * 8);
+
+    // Find the newest encrypted debug log and recover the log AES key.
+    // The log key is the same key used by declog to decrypt debug_network_*.log.enc.
+    {
+        const char* home = std::getenv("HOME");
+        if (home) {
+            std::string logdir = std::string(home) + "/.config/BambuStudio/log";
+            DIR* d = opendir(logdir.c_str());
+            if (d) {
+                std::string newest;
+                time_t newest_mtime = 0;
+                struct dirent* ent;
+                while ((ent = readdir(d)) != nullptr) {
+                    std::string nm = ent->d_name;
+                    if (nm.size() > 8 && nm.substr(nm.size() - 8) == ".log.enc") {
+                        std::string full = logdir + "/" + nm;
+                        struct stat st;
+                        if (stat(full.c_str(), &st) == 0 && (newest.empty() || st.st_mtime > newest_mtime)) {
+                            newest = full;
+                            newest_mtime = st.st_mtime;
+                        }
+                    }
+                }
+                closedir(d);
+                if (!newest.empty()) {
+                    std::vector<uint8_t> log_data;
+                    FILE* lf = fopen(newest.c_str(), "rb");
+                    if (lf) {
+                        fseek(lf, 0, SEEK_END); long lsz = ftell(lf); fseek(lf, 0, SEEK_SET);
+                        if (lsz > 0) {
+                            log_data.resize((size_t)lsz);
+                            fread(log_data.data(), 1, log_data.size(), lf);
+                        }
+                        fclose(lf);
+                    }
+                    if (log_data.size() >= 48) {
+                        R.log_key = scan_for_log_key(target, log_data);
+                        if (!R.log_key.empty())
+                            LOG_I("[log-key] recovered %d-bit log AES key from plugin memory",
+                                  (int)R.log_key.size() * 8);
+                        else
+                            LOG_W("[log-key] log AES key not found in plugin memory");
+                    }
+                }
+            }
+        }
+    }
 
     uint64_t acc_va = 0;
     int acc_conv = 0;

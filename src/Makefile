@@ -49,13 +49,16 @@ HEADERS = logging.h \
 
 .PHONY: all clean
 
-all: bambu_slicer_key_saver bambu_conf_decrypt
+all: bambu_slicer_key_saver bambu_conf_decrypt declog
 
 bambu_slicer_key_saver: $(SRCS) $(EMBED_HEADERS) $(HEADERS)
 	$(CXX) $(CXXFLAGS) -o $@ $(SRCS) $(LDFLAGS)
 
 # Standalone offline decoder for BambuNetworkEngine.conf (no plugin needed).
 bambu_conf_decrypt: bambu_conf_decrypt.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< -lcrypto
+
+declog: declog.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< -lcrypto
 
 # connect_redirect.so is built from source in this repo.
