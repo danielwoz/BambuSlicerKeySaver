@@ -41,6 +41,8 @@ extern "C++" {
                                                  std::vector<std::string> dev_list);
     using func_del_subscribe         = int   (*)(void* agent,
                                                  std::vector<std::string> dev_list);
+    using func_start_subscribe       = int   (*)(void* agent, std::string module);
+    using func_change_user           = int   (*)(void* agent, std::string user_info);
     using func_send_message_to_print = int   (*)(void* agent,
                                                  std::string dev_id,
                                                  std::string json_str,
@@ -315,6 +317,8 @@ struct BambuNetworkingPluginHandle::Impl {
     func_get_user_print_info   get_user_print_info   = nullptr;
     func_add_subscribe         add_subscribe         = nullptr;
     func_del_subscribe         del_subscribe         = nullptr;
+    func_start_subscribe       start_subscribe_fn    = nullptr;
+    func_change_user           change_user_fn        = nullptr;
     func_send_message_to_print send_message_to_print = nullptr;
     func_set_on_message_fn     set_on_message_fn     = nullptr;
     func_set_on_server_conn_fn set_on_server_conn_fn = nullptr;
@@ -404,6 +408,8 @@ struct BambuNetworkingPluginHandle::Impl {
         get_user_print_info   = lib.sym<func_get_user_print_info>  ("bambu_network_get_user_print_info");
         add_subscribe         = lib.sym<func_add_subscribe>        ("bambu_network_add_subscribe");
         del_subscribe         = lib.sym<func_del_subscribe>        ("bambu_network_del_subscribe");
+        start_subscribe_fn    = lib.sym<func_start_subscribe>      ("bambu_network_start_subscribe");
+        change_user_fn        = lib.sym<func_change_user>          ("bambu_network_change_user");
 
 
 
@@ -581,6 +587,11 @@ struct BambuNetworkingPluginHandle::Impl {
                     "(arm enc_msg signing gate)\n",
                     topic_str.c_str(), dev.c_str());
                 std::fflush(stderr);
+                if (std::getenv("BAMBU_NO_AUTO_PROVISION")) {
+                    std::fprintf(stderr, "[plugin-cb] auto-provision skipped (env)\n");
+                    std::fflush(stderr);
+                    return;
+                }
                 if (set_user_selected_machine)
                     set_user_selected_machine(agent, dev);
                 if (install_device_cert)
@@ -704,6 +715,11 @@ bool BambuNetworkingPluginHandle::is_user_login() const {
     return m_impl->is_user_login(m_impl->agent);
 }
 
+int BambuNetworkingPluginHandle::connect_server() {
+    if (!m_impl->agent || !m_impl->connect_server) return -1;
+    return m_impl->connect_server(m_impl->agent);
+}
+
 bool BambuNetworkingPluginHandle::is_server_connected() const {
     if (m_impl->ready_override.load()) {
 
@@ -726,6 +742,16 @@ int BambuNetworkingPluginHandle::subscribe_device(const std::string& dev_id) {
     if (!m_impl->agent || !m_impl->add_subscribe) return -1;
     std::vector<std::string> v{dev_id};
     return m_impl->add_subscribe(m_impl->agent, v);
+}
+
+int BambuNetworkingPluginHandle::start_subscribe(const std::string& module) {
+    if (!m_impl->agent || !m_impl->start_subscribe_fn) return -1;
+    return m_impl->start_subscribe_fn(m_impl->agent, module);
+}
+
+int BambuNetworkingPluginHandle::change_user(const std::string& user_info) {
+    if (!m_impl->agent || !m_impl->change_user_fn) return -1;
+    return m_impl->change_user_fn(m_impl->agent, user_info);
 }
 
 int BambuNetworkingPluginHandle::unsubscribe_device(const std::string& dev_id) {
@@ -858,8 +884,13 @@ int BambuNetworkingPluginHandle::send_message_to_printer(const std::string& dev_
                                                         const std::string& json_payload,
                                                         int                qos) {
     if (!m_impl->agent || !m_impl->send_message_to_print) return -1;
+    // The trailing "flag" arg selects the channel in some plugin builds
+    // (0=auto/LAN-first, non-zero may force cloud). Overridable for the
+    // enc_msg/get_app_cert capture experiment via BAMBU_SEND_FLAG.
+    int flag = 0;
+    if (const char* f = std::getenv("BAMBU_SEND_FLAG")) flag = std::atoi(f);
     return m_impl->send_message_to_print(m_impl->agent, dev_id,
-                                         json_payload, qos, 0);
+                                         json_payload, qos, flag);
 }
 
 namespace {
@@ -986,6 +1017,45 @@ int BambuNetworkingPluginHandle::start_local_print_with_record(
     return m_impl->start_local_print_with_record(
         m_impl->agent, std::move(pp),
          {},  {},  {});
+}
+
+int BambuNetworkingPluginHandle::start_cloud_print(
+        const LocalPrintParams& params) {
+    if (!m_impl->agent)        return -1;
+    if (!m_impl->start_print)  return -2;
+    PluginPrintParams pp{};
+    copy_gui_fields_into_plugin_params(params, pp, "cloud");
+
+    long cancel_after = 0;
+    if (const char* ca = std::getenv("BAMBU_NET_PRINT_CANCEL_AFTER_STAGE"))
+        cancel_after = std::atol(ca);
+    auto stage_count = std::make_shared<std::atomic<long>>(0);
+    auto t0 = std::chrono::steady_clock::now();
+    long max_ms = 30000;
+    if (const char* mm = std::getenv("BAMBU_NET_PRINT_MAX_MS"))
+        max_ms = std::atol(mm);
+    auto update_fn = [stage_count](int status, int code, std::string msg) {
+        long n = ++(*stage_count);
+        std::fprintf(stderr, "[cloud-print] stage#%ld status=%d code=%d msg=%s\n",
+                     n, status, code, msg.c_str());
+        std::fflush(stderr);
+    };
+    auto cancel_fn = [stage_count, cancel_after, t0, max_ms]() -> bool {
+        bool by_stage = (cancel_after > 0 && stage_count->load() >= cancel_after);
+        bool by_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - t0).count() >= max_ms;
+        if (by_stage || by_time) {
+            std::fprintf(stderr, "[cloud-print] cancel_fn -> true "
+                         "(by_stage=%d by_time=%d stages=%ld)\n",
+                         int(by_stage), int(by_time), stage_count->load());
+            std::fflush(stderr);
+            return true;
+        }
+        return false;
+    };
+    auto wait_fn = [](int, std::string) -> bool { return true; };
+    return m_impl->start_print(m_impl->agent, std::move(pp),
+                               update_fn, cancel_fn, wait_fn);
 }
 
 int BambuNetworkingPluginHandle::start_local_print(

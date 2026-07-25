@@ -42,12 +42,15 @@ public:
     virtual bool is_user_login() const;
 
     virtual bool is_server_connected() const;
+    virtual int  connect_server();
 
     virtual bool get_user_print_info(unsigned int* http_code,
                                      std::string*  http_body) const;
 
     virtual int subscribe_device  (const std::string& dev_id);
     virtual int unsubscribe_device(const std::string& dev_id);
+    virtual int start_subscribe   (const std::string& module);
+    virtual int change_user       (const std::string& user_info);
 
     virtual int publish_to_device(const std::string& dev_id,
                                   const std::string& json_payload,
@@ -162,6 +165,11 @@ public:
 
     };
     virtual int start_local_print_with_record(const LocalPrintParams& params);
+
+    // Cloud print entry (bambu_network_start_print). Used by the app-cert
+    // capture hook: the cloud path signs create_task early (before any
+    // upload), loading the account app cert + key into plugin memory.
+    virtual int start_cloud_print(const LocalPrintParams& params);
 
     virtual int start_local_print(const LocalPrintParams& params);
 
