@@ -36,7 +36,44 @@
 #include <thread>
 #include <atomic>
 
-static std::string g_dev_id = "01S00A2B3C4D5E6";
+// Read a dev_id from BambuStudio.conf if not provided via command line.
+// Searches for "user_last_selected_machine" in the platform config directory.
+static std::string read_dev_id_from_config() {
+    // Check environment variable first.
+    const char* env_dev = std::getenv("BAMBU_NET_TARGET_DEV");
+    if (env_dev && env_dev[0]) return std::string(env_dev);
+
+    // Determine config directory path.
+    const char* home = std::getenv("HOME");
+    std::string conf_path;
+    if (home && home[0]) {
+        conf_path = std::string(home) + "/.config/BambuStudio/BambuStudio.conf";
+    } else {
+        return "";
+    }
+
+    // Read the config file.
+    FILE* f = std::fopen(conf_path.c_str(), "r");
+    if (!f) return "";
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    rewind(f);
+    std::string content(sz, '\0');
+    fread(&content[0], 1, sz, f);
+    fclose(f);
+
+    // Extract "user_last_selected_machine" value from JSON.
+    const char* key = "\"user_last_selected_machine\":";
+    size_t pos = content.find(key);
+    if (pos == std::string::npos) return "";
+    size_t start = content.find('"', pos + strlen(key));
+    if (start == std::string::npos) return "";
+    size_t end = content.find('"', start + 1);
+    if (end == std::string::npos) return "";
+    return content.substr(start + 1, end - start - 1);
+}
+
+static std::string g_dev_id = "";
 static SSL_CTX*    g_ctx     = nullptr;
 static std::string g_cert_pem;
 static std::string g_key_pem;
@@ -375,6 +412,16 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--dev-cert-in")) g_dev_cert_in = argv[i + 1];
         else if (!std::strcmp(argv[i], "--dev-key-in"))  g_dev_key_in  = argv[i + 1];
     }
+
+    // If dev_id was not provided via command line, read from BambuStudio.conf.
+    if (g_dev_id.empty()) {
+        g_dev_id = read_dev_id_from_config();
+        if (!g_dev_id.empty())
+            std::fprintf(stderr, "[fake2] read dev_id from config: %s\n", g_dev_id.c_str());
+        else
+            std::fprintf(stderr, "[fake2] warning: no dev_id provided and none found in BambuStudio.conf\n");
+    }
+
     g_real_report = load_file("BAMBU_FAKE_REPORT");
     if (!gen_ctx()) { logln("gen_ctx failed"); return 1; }
     if (cert_out) { FILE* f=std::fopen(cert_out,"wb"); if(f){std::fwrite(g_cert_pem.data(),1,g_cert_pem.size(),f);std::fclose(f);} }

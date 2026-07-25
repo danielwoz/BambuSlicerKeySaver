@@ -54,7 +54,6 @@ public:
 
     virtual int subscribe_device  (const std::string& dev_id);
     virtual int unsubscribe_device(const std::string& dev_id);
-    virtual int start_subscribe   (const std::string& module);
     virtual int change_user       (const std::string& user_info);
 
     // Cloud MQTT session control. start_subscribe("app") brings up the cloud

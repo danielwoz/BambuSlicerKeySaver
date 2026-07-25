@@ -5,7 +5,10 @@
 # harness as run_flip_gate.
 #
 # Usage: powershell -File win\run_appcert_rng.ps1 [-Seconds 90]
-param([int]$Seconds = 90)
+param(
+  [int]$Seconds = 90,
+  [string]$DeviceId  = ""  # Device id of a cloud connected printer.
+)
 $ErrorActionPreference = "Stop"
 
 $root   = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -32,9 +35,10 @@ $env:BBL_RNG_LOG        = Join-Path $work "rng.log"
 $env:BBL_AES_LOG        = Join-Path $work "aes.log"
 $env:BBL_BLOCK_WATCHDOG = "1"     # keep the process running for the full capture window
 
+# TODO: We should fill in the DeviceId from users BambuStudio.conf if one exists in the default location.
 $argv = @(
   "--plugin",      $plugin,
-  "--dev-id",      "01S00A2B3C4D5E6",
+  "--dev-id",      $DeviceId,
   "--broker",      $broker,
   "--cert-dir",    $cert,
   "--work-dir",    $work,

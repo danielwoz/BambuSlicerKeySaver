@@ -39,7 +39,29 @@
 #include <string>
 #include <vector>
 
-static std::string g_dev_id = "01S00A2B3C4D5E6";
+// Read dev_id from BambuStudio.conf if not provided via command line.
+static std::string read_dev_id_from_config() {
+    const char* appdata = std::getenv("APPDATA");
+    if (!appdata || !appdata[0]) return "";
+    std::string conf_path = std::string(appdata) + "\\BambuStudio\\BambuStudio.conf";
+    FILE* f = std::fopen(conf_path.c_str(), "rb");
+    if (!f) return "";
+    std::string content;
+    char buf[8192];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) content.append(buf, n);
+    fclose(f);
+    const char* key = "\"user_last_selected_machine\":";
+    size_t pos = content.find(key);
+    if (pos == std::string::npos) return "";
+    size_t start = content.find('"', pos + strlen(key));
+    if (start == std::string::npos) return "";
+    size_t end = content.find('"', start + 1);
+    if (end == std::string::npos) return "";
+    return content.substr(start + 1, end - start - 1);
+}
+
+static std::string g_dev_id = "";
 static SSL_CTX*    g_ctx     = nullptr;
 static std::string g_cert_pem;       // printer leaf cert (PEM)
 static std::string g_key_pem;        // printer private key (PEM)
@@ -357,6 +379,15 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--port")) port = (unsigned short)atoi(argv[i + 1]);
         else if (!std::strcmp(argv[i], "--cert-out")) cert_out = argv[i + 1];
         else if (!std::strcmp(argv[i], "--key-out"))  key_out  = argv[i + 1];
+    }
+
+    // If dev_id was not provided via command line, read from BambuStudio.conf.
+    if (g_dev_id.empty()) {
+        g_dev_id = read_dev_id_from_config();
+        if (!g_dev_id.empty())
+            std::fprintf(stderr, "[fake2] read dev_id from config: %s\n", g_dev_id.c_str());
+        else
+            std::fprintf(stderr, "[fake2] warning: no dev_id provided and none found in BambuStudio.conf\n");
     }
 
     g_real_report = load_file("BAMBU_FAKE_REPORT");

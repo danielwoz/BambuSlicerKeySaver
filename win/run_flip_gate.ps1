@@ -25,6 +25,7 @@
 # forces --work-dir absolute internally (GetFullPathNameA).
 #
 # Usage: powershell -File win\run_flip_gate.ps1 [-MaxRuns 15] [-Diag]
+# TODO: We should fill in the DeviceId from users BambuStudio.conf if one exists in the default location.
 param(
   [string]$Mode    = "--flip-gate",
   [string]$OutName = "live_key.txt",
@@ -34,7 +35,8 @@ param(
   [int]   $MaxRuns = 15,
   [int]   $ScanPasses   = 8,
   [int]   $ScanBudgetMs = 3000,
-  [switch]$Diag                     # set BBL_GATE_DIAG to report the live-prime region
+  [switch]$Diag,                    # set BBL_GATE_DIAG to report the live-prime region
+  [string]$DeviceId  = ""  # Device id of a cloud connected printer.
 )
 $ErrorActionPreference = "Stop"
 
@@ -79,7 +81,7 @@ for ($runI = 1; $runI -le $MaxRuns -and -not $landed; $runI++) {
 
   $argv = @(
     "--plugin",       $plugin,
-    "--dev-id",       "01S00A2B3C4D5E6",
+    "--dev-id",       $DeviceId,
     "--broker",       $broker,
     "--cert-dir",     $cert,
     "--work-dir",     $work,

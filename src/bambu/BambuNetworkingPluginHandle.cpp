@@ -326,7 +326,7 @@ struct BambuNetworkingPluginHandle::Impl {
     func_get_user_print_info   get_user_print_info   = nullptr;
     func_add_subscribe         add_subscribe         = nullptr;
     func_del_subscribe         del_subscribe         = nullptr;
-func_start_subscribe       start_subscribe_fn    = nullptr;
+    func_start_subscribe       start_subscribe_fn    = nullptr;
     func_change_user           change_user_fn        = nullptr;
     func_stop_subscribe        stop_subscribe        = nullptr;
     func_refresh_connection    refresh_connection    = nullptr;
@@ -419,7 +419,7 @@ func_start_subscribe       start_subscribe_fn    = nullptr;
         get_user_print_info   = lib.sym<func_get_user_print_info>  ("bambu_network_get_user_print_info");
         add_subscribe         = lib.sym<func_add_subscribe>        ("bambu_network_add_subscribe");
         del_subscribe         = lib.sym<func_del_subscribe>        ("bambu_network_del_subscribe");
-start_subscribe_fn    = lib.sym<func_start_subscribe>      ("bambu_network_start_subscribe");
+        start_subscribe_fn    = lib.sym<func_start_subscribe>      ("bambu_network_start_subscribe");
         change_user_fn        = lib.sym<func_change_user>          ("bambu_network_change_user");
         stop_subscribe        = lib.sym<func_stop_subscribe>       ("bambu_network_stop_subscribe");
         refresh_connection    = lib.sym<func_refresh_connection>   ("bambu_network_refresh_connection");
@@ -818,14 +818,6 @@ int BambuNetworkingPluginHandle::unsubscribe_device(const std::string& dev_id) {
     if (!m_impl->agent || !m_impl->del_subscribe) return -1;
     std::vector<std::string> v{dev_id};
     return m_impl->del_subscribe(m_impl->agent, v);
-}
-
-int BambuNetworkingPluginHandle::start_subscribe(const std::string& module) {
-    if (!m_impl->agent || !m_impl->start_subscribe) return -2;
-    int rc = m_impl->start_subscribe(m_impl->agent, module);
-    std::fprintf(stderr, "[plugin] start_subscribe(%s) rc=%d\n", module.c_str(), rc);
-    std::fflush(stderr);
-    return rc;
 }
 
 int BambuNetworkingPluginHandle::stop_subscribe(const std::string& module) {

@@ -479,7 +479,8 @@ std::string abspath(const std::string& p) {
 //   bambu_host --auto  [--plugin <dll>] [--out <file>] [--attempts N] [--kill-studio]
 int run_auto(int argc, char** argv, const std::string& ed) {
     char self[MAX_PATH]; GetModuleFileNameA(nullptr, self, MAX_PATH);
-    const char* dev = arg_value(argc, argv, "--dev-id", "01S00A2B3C4D5E6");
+    const char* dev = arg_value(argc, argv, "--dev-id", "");
+    if (!dev[0]) { std::fprintf(stderr, "error: --dev-id is required (see --help)\n"); return 2; }
 
     // Plugin: --plugin arg -> (--plugin-version CDN download) -> %APPDATA% install -> CDN default.
     std::string plugin = arg_value(argc, argv, "--plugin", "");
@@ -1117,7 +1118,7 @@ int run_from_disk(const char* pem_path, const std::vector<Envelope>& envs, const
 
 int main(int argc, char** argv) {
     const char* out      = arg_value(argc, argv, "--out", "slicer_key_windows.txt");
-    const char* dev_id   = arg_value(argc, argv, "--dev-id", "00M00A000000000");
+    const char* dev_id   = arg_value(argc, argv, "--dev-id", "");
     const char* user     = arg_value(argc, argv, "--username", "bblp");
     const char* access   = arg_value(argc, argv, "--access-code", "offline");
     const char* work_arg = arg_value(argc, argv, "--work-dir", ".");
@@ -1312,6 +1313,7 @@ int main(int argc, char** argv) {
     // --offline: skip the fake printer entirely (local RSA op still materialises
     // the key). --printer-ip <ip>: connect to a REAL printer instead of the fake
     // broker (the most reliable capture path -- the printer drives real signing).
+    if (!dev_id[0]) { std::fprintf(stderr, "error: --dev-id is required (see --help)\n"); return 2; }
     const bool offline = has_flag(argc, argv, "--offline");
     const char* printer_ip = arg_value(argc, argv, "--printer-ip", nullptr);
     const bool use_broker = !offline && !printer_ip;
@@ -1587,7 +1589,7 @@ int main(int argc, char** argv) {
             }
         }
         BambuNetworkingPluginHandle::CloudUploadParams cp{};
-        cp.dev_id          = arg_value(argc, argv, "--print-dev", "00M00A000000000");
+        cp.dev_id          = arg_value(argc, argv, "--print-dev", "");
         cp.local_file_path = arg_value(argc, argv, "--print-file", "");
         cp.project_name    = arg_value(argc, argv, "--print-name", "cube");
         cp.task_name       = cp.project_name;

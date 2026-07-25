@@ -171,6 +171,7 @@ static void usage_simple(const char* prog) {
         "\n"
         "Optional:\n"
         "  --plugin PATH       libbambu_networking.so path (probes defaults)\n"
+        "  --dev-id ID         Device ID (required; e.g. a printer serial number)\n"
         "  --out PATH          Output path for the PKCS#1 RSA private key PEM\n"
         "                      (default: <BambuStudio config dir>/slicer_key.pem)\n"
         "  --timeout N         Seconds before giving up (default: 120)\n"
@@ -249,6 +250,7 @@ int main(int argc, char** argv) {
             std::string t; if (!need(t)) return 2;
             args.timeout_s = std::atoi(t.c_str());
         }
+        else if (s == "--dev-id")      { if (!need(args.dev_id)) return 2; }
         else if (s == "--verbose")     { args.verbose = true; }
         else if (s == "--help" || s == "-h") { show_help = true; }
         else {
@@ -258,13 +260,45 @@ int main(int argc, char** argv) {
     }
 
     // Synthetic identifiers — no real printer required.
-    args.dev_id      = "01S00A2B3C4D5E6";
     args.access_code = "offline";
     std::string lan_ip = "127.0.0.1";
 
     if (show_help) {
         usage_simple(argv[0]);
         return 2;
+    }
+
+    // Auto-detect device ID from BambuStudio.conf if not provided.
+    if (args.dev_id.empty()) {
+        const char* home = std::getenv("HOME");
+        if (home) {
+            std::string conf = std::string(home) + "/.config/BambuStudio/BambuStudio.conf";
+            FILE* f = fopen(conf.c_str(), "r");
+            if (f) {
+                char buf[8192];
+                size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+                buf[n] = 0;
+                fclose(f);
+                const char* key = "\"user_last_selected_machine\":";
+                char* pos = strstr(buf, key);
+                if (pos) {
+                    pos += strlen(key);
+                    while (*pos && *pos != '"') pos++;
+                    if (*pos == '"') {
+                        pos++;
+                        char* end = strchr(pos, '"');
+                        if (end) {
+                            args.dev_id = std::string(pos, end - pos);
+                            LOG_I("auto-detected dev_id from BambuStudio.conf: %s", args.dev_id.c_str());
+                        }
+                    }
+                }
+            }
+        }
+        if (args.dev_id.empty()) {
+            std::fprintf(stderr, "error: --dev-id is required (see --help)\n");
+            return 2;
+        }
     }
 
     g_verbose = args.verbose;
@@ -546,6 +580,24 @@ int main(int argc, char** argv) {
         }
     } else {
         LOG_W("network-engine conf key not recovered from plugin memory");
+    }
+
+    // Write the recovered log AES key (independent of the RSA capture outcome).
+    if (!cap.log_key.empty()) {
+        std::string lk = args.out_path;
+        auto sl = lk.rfind('/');
+        lk = (sl == std::string::npos ? std::string(".") : lk.substr(0, sl))
+             + "/debug_log.key";
+        ensure_parent_dir(args.out_path);
+        int lkfd = open(lk.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (lkfd >= 0) {
+            (void)!write(lkfd, cap.log_key.data(), cap.log_key.size());
+            close(lkfd);
+            LOG_I("debug-log key (%zu-bit) written: %s",
+                  cap.log_key.size() * 8, lk.c_str());
+        }
+    } else {
+        LOG_W("debug-log key not recovered from plugin memory");
     }
 
     // Shut down daemon.

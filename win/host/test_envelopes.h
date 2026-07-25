@@ -7,6 +7,7 @@
 #include "envelope.h"
 
 // Slicer PUBLIC RSA-2048 modulus N (locate the private factor via N mod p == 0).
+// Rather than static code this we should use ./resources/cert/slicer_base64.cer
 inline const char* SLICER_PUBLIC_N_HEX = "e201171629c05d1b15a5db951e98b78c25a75489f7edbcb1759a0bbc15bf610af498472b16ba182982d0475d5e1d162752582700282fd1bab3311d24108cb32932abb3d330e5d2950a8dcbee904169b209286604a01451ec80788e8f0256786f802fd6f4a5d6cff95c435c6c9836228cad8fe67452da64df84bfefa0f7f12ea7359de9b7621c630abbafc3e031f77e2a785a29ca3df9983e8f1cd519963951bdc3c9766dd1e80ca4b6ad65697b6269790f6cc6c35f997021aa55ab6a36f06340e3d1264717204853e592471462e9db937ab3bc1148f9148aca22a62932f154e0b672c223033c49c0efc921119b2d3687d5f4345da995d37c814ae24a09a287d1";
 
 inline std::vector<Envelope> embedded_test_envelopes() {

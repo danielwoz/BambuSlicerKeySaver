@@ -17,11 +17,11 @@ inline constexpr const char kVersion[] = "02.07.01.51";
 // resources (studio installer + plugin) whose "url" fields point at ZIPs. The
 // X-BBL-OS-Type request header selects the per-OS build (linux / windows). The
 // query carries a CHANNEL version (minor line + ".00"); the CDN resolves it to
-// the current build in that line (e.g. cloud=02.06.01.00 -> plugin 02.06.01.50).
+// the current build in that line (e.g. cloud=02.07.01.00 -> plugin 02.07.01.50).
 inline constexpr const char kManifestBase[] =
     "https://api.bambulab.com/v1/iot-service/api/slicer/resource?slicer/plugins/cloud=";
 
-// The channel query value for a full version: "02.06.01.50" -> "02.06.01.00".
+// The channel query value for a full version: "02.07.01.50" -> "02.07.01.00".
 inline std::string channel_for(const std::string& version) {
     size_t last = version.find_last_of('.');
     return last == std::string::npos ? version : version.substr(0, last) + ".00";
@@ -34,6 +34,9 @@ inline std::string manifest_url_for(const std::string& version) {
 
 // Default (current-version) manifest URL. Kept as a constant for callers (e.g.
 // the Linux daemon) that just want the version this tool targets.
+// NOTE: This manifest URL should be derived from the same code BambuStudio uses
+// for plugin downloads. The shared code is in BambuStudio's network layer and
+// is not currently available to this standalone tool.
 inline constexpr const char kManifestUrl[] =
     "https://api.bambulab.com/v1/iot-service/api/slicer/resource?slicer/plugins/cloud=02.07.01.00";
 

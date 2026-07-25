@@ -17,6 +17,8 @@
 #include <thread>
 #include <chrono>
 #include <vector>
+#include <regex>
+#include <fstream>
 
 using namespace Slic3r::bambu;
 static std::string env(const char* k, const char* d) {
@@ -79,8 +81,67 @@ int main() {
     }
 
     // === Faithful bambu_host sequence (win/host/main.cpp) ===
+    // Read printer IP and access code from BambuStudio.conf if not provided via env.
     std::string ip  = env("PRINTER_IP", "127.0.0.1");
-    std::string acc = env("ACCESS_CODE", "64e81956");
+
+    // Read access code from BambuStudio.conf "access_code" section.
+    std::string acc = env("ACCESS_CODE", "");
+    if (acc.empty()) {
+        // Try to read from BambuStudio.conf
+        const char* home = std::getenv("HOME");
+        if (home && home[0]) {
+            std::string conf_path = std::string(home) + "/.config/BambuStudio/BambuStudio.conf";
+            FILE* f = std::fopen(conf_path.c_str(), "r");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                long sz = ftell(f);
+                rewind(f);
+                std::string content(sz, '\0');
+                fread(&content[0], 1, sz, f);
+                fclose(f);
+
+                // Find "access_code" section and extract device serial -> code mappings
+                const char* key = "\"access_code\"";
+                size_t pos = content.find(key);
+                if (pos != std::string::npos) {
+                    size_t start = content.find('{', pos);
+                    if (start != std::string::npos) {
+                        // Find the closing brace
+                        int depth = 0;
+                        bool in_str = false;
+                        size_t end = std::string::npos;
+                        for (size_t i = start; i < content.size(); ++i) {
+                            char c = content[i];
+                            if (in_str) {
+                                if (c == '"' && content[i - 1] != '\\') in_str = false;
+                            } else if (c == '"') {
+                                in_str = true;
+                            } else if (c == '{') {
+                                ++depth;
+                            } else if (c == '}') {
+                                if (--depth == 0) { end = i; break; }
+                            }
+                        }
+                        if (end != std::string::npos) {
+                            std::string section = content.substr(start, end - start + 1);
+                            // Extract first device serial -> access code pair
+                            std::regex pair_re("\"([^\"]+)\"\\s*:\\s*\"([^\"]+)\"");
+                            auto it = std::sregex_iterator(section.begin(), section.end(), pair_re);
+                            if (it != std::sregex_iterator()) {
+                                acc = (*it)[2].str();
+                                std::fprintf(stderr, "[drv] read access code from BambuStudio.conf\n");
+                            }
+                        }
+                    }
+                }
+            }
+            if (acc.empty()) {
+                std::fprintf(stderr, "[drv] error: no access code found in BambuStudio.conf\n");
+                std::fprintf(stderr, "[drv] set ACCESS_CODE env var or use --access-code flag\n");
+                return 1;
+            }
+        }
+    }
     std::string user= env("PRINTER_USER", "bblp");
 
     h->register_local_message_receiver(dev, [](std::string,std::vector<uint8_t>,uint8_t){});

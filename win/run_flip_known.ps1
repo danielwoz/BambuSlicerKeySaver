@@ -10,10 +10,12 @@
 # NOT invoke this; it is the one-command reproduction for the live run.
 #
 # Usage: powershell -File win\run_flip_known.ps1 [-Mode "--flip-known"]
+# TODO: We should fill in the DeviceId from users BambuStudio.conf if one exists in the default location.
 param(
   [string]$Mode    = "--flip-known",   # or --flip-scan / --flip-capture / --find-verdict
   [string]$OutName = "live_key.txt",
-  [string]$LogTag  = "flipknown"
+  [string]$LogTag  = "flipknown",
+  [string]$DeviceId  = ""  # Device id of a cloud connected printer.
 )
 $ErrorActionPreference = "Stop"
 
@@ -41,7 +43,7 @@ $stderr  = Join-Path $work "$LogTag.err"
 
 $argv = @(
   "--plugin",     $plugin,
-  "--dev-id",     "01S00A2B3C4D5E6",
+  "--dev-id",     $DeviceId,
   "--broker",     $broker,
   "--cert-dir",   $cert,
   "--work-dir",   $work,          # ABSOLUTE (Join-Path of an absolute $build)

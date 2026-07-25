@@ -15,8 +15,48 @@
 #include <vector>
 #include <openssl/evp.h>
 
-static const unsigned char kLogKey[16] = {
-    'y','y','u','B','c','f','t','O','2','j','k','Z','e','u','c','y'};
+// The log encryption key is loaded from a file rather than hardcoded.
+// Search order: BAMBU_LOG_ENC_KEY env var, then ~/.config/BambuStudio/log_enc.key.
+static const unsigned char* load_log_key() {
+    static unsigned char key[16];
+    static bool loaded = false;
+    if (loaded) return key;
+    loaded = true;
+
+    // Check environment variable first.
+    const char* env_path = std::getenv("BAMBU_LOG_ENC_KEY");
+    if (env_path && env_path[0]) {
+        FILE* f = std::fopen(env_path, "rb");
+        if (f) {
+            size_t n = std::fread(key, 1, 16, f);
+            std::fclose(f);
+            if (n == 16) {
+                std::fprintf(stderr, "loaded log key from env: %s\n", env_path);
+                return key;
+            }
+        }
+        std::fprintf(stderr, "warning: BAMBU_LOG_ENC_KEY=%s failed to load\n", env_path);
+    }
+
+    // Try platform-specific config directory.
+    const char* home = std::getenv("HOME");
+    if (home && home[0]) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/.config/BambuStudio/log_enc.key", home);
+        FILE* f = std::fopen(path, "rb");
+        if (f) {
+            size_t n = std::fread(key, 1, 16, f);
+            std::fclose(f);
+            if (n == 16) {
+                std::fprintf(stderr, "loaded log key from: %s\n", path);
+                return key;
+            }
+        }
+    }
+
+    std::fprintf(stderr, "error: no log encryption key found. Set BAMBU_LOG_ENC_KEY or place key at ~/.config/BambuStudio/log_enc.key\n");
+    return nullptr;
+}
 
 int main(int argc, char** argv) {
     bool pretty = false;
@@ -36,11 +76,14 @@ int main(int argc, char** argv) {
     std::fclose(f);
     n -= (n % 16);  // ECB: whole 16-byte blocks only
 
+    const unsigned char* log_key = load_log_key();
+    if (!log_key) return 1;
+
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return 1;
     std::vector<unsigned char> out((size_t)n + 16);
     int l1 = 0, l2 = 0;
-    bool ok = EVP_DecryptInit_ex(ctx, EVP_aes_128_ecb(), nullptr, kLogKey, nullptr) == 1;
+    bool ok = EVP_DecryptInit_ex(ctx, EVP_aes_128_ecb(), nullptr, log_key, nullptr) == 1;
     EVP_CIPHER_CTX_set_padding(ctx, 0);
     ok = ok && EVP_DecryptUpdate(ctx, out.data(), &l1, in.data(), (int)n) == 1;
     ok = ok && EVP_DecryptFinal_ex(ctx, out.data() + l1, &l2) == 1;
