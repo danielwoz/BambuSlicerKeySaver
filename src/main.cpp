@@ -268,9 +268,37 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // Auto-detect device ID from BambuStudio.conf if not provided.
     if (args.dev_id.empty()) {
-        std::fprintf(stderr, "error: --dev-id is required (see --help)\n");
-        return 2;
+        const char* home = std::getenv("HOME");
+        if (home) {
+            std::string conf = std::string(home) + "/.config/BambuStudio/BambuStudio.conf";
+            FILE* f = fopen(conf.c_str(), "r");
+            if (f) {
+                char buf[8192];
+                size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+                buf[n] = 0;
+                fclose(f);
+                const char* key = "\"user_last_selected_machine\":";
+                char* pos = strstr(buf, key);
+                if (pos) {
+                    pos += strlen(key);
+                    while (*pos && *pos != '"') pos++;
+                    if (*pos == '"') {
+                        pos++;
+                        char* end = strchr(pos, '"');
+                        if (end) {
+                            args.dev_id = std::string(pos, end - pos);
+                            LOG_I("auto-detected dev_id from BambuStudio.conf: %s", args.dev_id.c_str());
+                        }
+                    }
+                }
+            }
+        }
+        if (args.dev_id.empty()) {
+            std::fprintf(stderr, "error: --dev-id is required (see --help)\n");
+            return 2;
+        }
     }
 
     g_verbose = args.verbose;
