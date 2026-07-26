@@ -1,5 +1,5 @@
 // Minimal AES-128-ECB decoder for the plugin's debug_network_*.log.enc numeric
-// log. Key = "yyuBcftO2jkZeucy". Prints the decrypted bytes to stdout; the log
+// log. Key = <loaded at runtime>. Prints the decrypted bytes to stdout; the log
 // stores \x1f<id>\x1f<param>... \r\n records. Usage: declog <in.enc>
 #include <windows.h>
 #include <bcrypt.h>

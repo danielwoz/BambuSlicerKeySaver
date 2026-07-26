@@ -142,9 +142,9 @@ int find_log_key(const char* logpath, const char* keyout) {
 }
 
 // True iff the 16-byte window is entirely printable ASCII. Both of the plugin's
-// baked AES keys are 16-char ASCII strings (log key yyuBcftO2jkZeucy, config key
-// i4crL3LESLnWapLS), so this cheap prefilter lets us scan byte-granular fast:
-// only ASCII-string windows reach the (expensive) AES-decrypt oracle test.
+// baked AES keys are 16-char ASCII strings (loaded at runtime), so this cheap
+// prefilter lets us scan byte-granular fast: only ASCII-string windows reach
+// the (expensive) AES-decrypt oracle test.
 static bool ascii_key16(const uint8_t* p) {
     for (int i = 0; i < 16; ++i)
         if (p[i] < 0x20 || p[i] > 0x7e) return false;
@@ -225,9 +225,6 @@ int find_config_key(const char* confpath, const char* outpath) {
         std::fprintf(stderr, "[cfgkey] RECOVERED config key (ascii)='%.16s' hex=", (const char*)best_key);
         for (int i = 0; i < 16; ++i) std::fprintf(stderr, "%02x", best_key[i]);
         std::fprintf(stderr, "\n[cfgkey] conf preview='%.*s'\n", 40, (const char*)best_pt);
-        static const uint8_t KNOWN[16] = { 'i','4','c','r','L','3','L','E','S','L','n','W','a','p','L','S' };
-        std::fprintf(stderr, "[cfgkey] matches known network_engine.key (i4crL3LESLnWapLS): %s\n",
-                     std::memcmp(best_key, KNOWN, 16) == 0 ? "YES" : "no");
         if (outpath && outpath[0]) {
             if (FILE* of = std::fopen(outpath, "wb")) {
                 std::fprintf(of, "network_engine.key (AES-128-ECB)\nascii: %.16s\nhex:   ", (const char*)best_key);

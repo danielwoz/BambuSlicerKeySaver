@@ -2009,8 +2009,8 @@ int main(int argc, char** argv) {
         const char* ko = arg_value(argc, argv, "--key-out", nullptr);
         ok = (bbl::find_log_key(lk, ko) == 0);
     } else if (has_flag(argc, argv, "--find-config-key")) {
-        // Recover the plugin's AES-128-ECB CONFIG key (network_engine.key,
-        // i4crL3LESLnWapLS) BLIND from live memory, using BambuNetworkEngine.conf
+        // Recover the plugin's AES-128-ECB CONFIG key (network_engine.key)
+        // BLIND from live memory, using BambuNetworkEngine.conf
         // as the decryption oracle. The config decrypt runs at plugin init, so no
         // sign/flip/printer is required; drive a few triggers so init has settled.
         for (int i = 0; i < 5; ++i) trigger_fn(&sctx);

@@ -1,7 +1,7 @@
 // declog — decode the plugin's debug_network_*.log.enc numeric log (Linux/OpenSSL
 // port of win/host/declog.cpp). The log is AES-128-ECB encrypted with the plugin's
-// fixed global log key "yyuBcftO2jkZeucy" (the second baked AES key, alongside the
-// conf key "i4crL3LESLnWapLS"). Records are \x1f<msg_id>\x1f<param>...\r\n where
+// fixed global log key (see runtime key file) (the second baked AES key, alongside the
+// conf key (see runtime key file)). Records are \x1f<msg_id>\x1f<param>...\r\n where
 // msg_id indexes the plugin's format-string table and the params are logged verbatim.
 //
 // Usage: declog <in.enc>            # raw decrypted bytes to stdout
