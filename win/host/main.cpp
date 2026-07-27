@@ -55,10 +55,6 @@ namespace bbl { int find_log_key(const char* logpath, const char* keyout = nullp
 namespace bbl { int run_get_app_cert(const char* conf_path, const char* config_key,
                                      const char* app_identity, const char* out_dir, const char* api_host); }
 namespace bbl { std::string scan_app_identity(); }
-namespace bbl { int decode_appcert_blob(const char* blob_arg, const char* encappkey_arg,
-                                         const char* keys_log, const char* key_hex,
-                                         const char* dump_path, int step,
-                                         const char* out_pem, bool want_selftest); }
 
 // Verification push-site frames captured by the plugin-message callback on the
 // first 'unsigned_studio' push (defined in BambuNetworkingPluginHandle.cpp).
@@ -1264,21 +1260,6 @@ int main(int argc, char** argv) {
         const char* api = arg_value(argc, argv, "--api", "https://api.bambulab.com");
         return bbl::run_get_app_cert(conf.c_str(), ck.c_str(), aid ? aid : "", od, api);
     }
-    if (has_flag(argc, argv, "--decode-appcert-blob")) {
-        // Offline: recover the app private key from a captured get_app_cert response
-        // "key" blob by GCM-trial-decrypting it with the AES keys aes_tap logged while
-        // the plugin decrypted it (the winning key is the session-derived R). With
-        // --enc-app-key it also identifies K and names the derivation R = f(K).
-        const char* blob = arg_value(argc, argv, "--blob", nullptr);
-        const char* enc  = arg_value(argc, argv, "--enc-app-key", nullptr);
-        const char* keys = arg_value(argc, argv, "--keys", "aes_tap.log");
-        const char* khex = arg_value(argc, argv, "--key", nullptr);
-        const char* dump = arg_value(argc, argv, "--dump", nullptr);
-        int step = std::atoi(arg_value(argc, argv, "--step", "4"));
-        const char* op   = arg_value(argc, argv, "--out", "app_key_from_blob.bin");
-        bool st = has_flag(argc, argv, "--selftest");
-        return bbl::decode_appcert_blob(blob, enc, keys, khex, dump, step, op, st);
-    }
 
     // Downstream-only proof (no plugin): a correct 256-byte accumulator capture
     // reconstructs + validates the slicer key.
@@ -1640,37 +1621,6 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[host] cloud settle %ds: pushall probe rc=%d rx_msgs=%d raw_srv=%d\n",
                      i, prc, g_msg_count.load(), (int)handle.raw_is_server_connected());
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    }
-
-    // --appcert-dump: get_app_cert has fired during the cloud-settle loop above (each
-    // pushall probe over the cloud channel is on the signed-command path). The
-    // decrypted app material and its session keys are now resident, so snapshot the
-    // plugin's memory (VirtualQuery copy -- no DR, no anti-debug trip). That single
-    // snapshot holds the response-blob key R, the session key K, the request, and the
-    // response blob together, so all four can be recovered + correlated offline
-    // (decode-appcert-blob --dump). Answers "what is R" without reversing its
-    // derivation: if R is resident contiguously, the GCM-tag scan finds it.
-    if (has_flag(argc, argv, "--appcert-dump")) {
-        // Fire the privileged signed command (ams_filament_setting) a few times so the
-        // plugin enters enc_msg and fetches+decrypts get_app_cert (it runs upstream of
-        // the sign gate, so the sign itself failing headless is irrelevant here).
-        SignCtx dctx{ &handle, dev_id };
-        int fires = std::atoi(arg_value(argc, argv, "--appcert-dump-fires", "20"));
-        for (int i = 0; i < fires; ++i) { trigger_fn(&dctx); std::this_thread::sleep_for(std::chrono::milliseconds(250)); }
-        int wait_ms = std::atoi(arg_value(argc, argv, "--appcert-dump-wait-ms", "1500"));
-        std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
-        const char* dd = arg_value(argc, argv, "--dump-dir", "appcert_snapshot");
-        std::fprintf(stderr, "[appcert-dump] snapshotting plugin memory -> %s\n", dd);
-        int rc = bbl::dump_plugin_regions(dd);
-        if (has_flag(argc, argv, "--tap") || std::getenv("BBL_TAP_LOG")) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(400));
-            bbl::stop_cloud_tap();
-        }
-        std::fprintf(stderr, "[appcert-dump] done rc=%d (cloud_tap blocks=%lld)\n",
-                     rc, bbl::cloud_tap_hits());
-        if (broker_up) { TerminateProcess(broker_pi.hProcess, 0);
-                         CloseHandle(broker_pi.hProcess); CloseHandle(broker_pi.hThread); }
-        return rc;
     }
 
     // 9. Blind extraction: drives signing on a background thread, sweeps the heap
