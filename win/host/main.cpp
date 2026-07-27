@@ -43,6 +43,7 @@
 #include "host/death_diag.hpp"
 #include "host/dump_regions.hpp"
 #include "host/lan_discover.hpp"
+#include "bambu_config.h"
 #include "reconstruct.h"
 #include "bigint.h"
 
@@ -482,7 +483,7 @@ int run_auto(int argc, char** argv, const std::string& ed) {
     const char* dev = arg_value(argc, argv, "--dev-id", "");
     std::string dev_auto;
     if (!dev[0]) {
-        dev_auto = bbl::read_studio_last_machine();
+        dev_auto = bbl_config::detect_last_machine();
         if (!dev_auto.empty()) {
             dev = dev_auto.c_str();
             std::fprintf(stderr, "[auto] auto-detected dev-id from BambuStudio.conf: %s\n", dev);
@@ -1149,7 +1150,7 @@ int main(int argc, char** argv) {
     // so a logged-in install needs no manual device argument.
     std::string dev_id_auto;
     if (!dev_id[0]) {
-        dev_id_auto = bbl::read_studio_last_machine();
+        dev_id_auto = bbl_config::detect_last_machine();
         if (!dev_id_auto.empty()) {
             dev_id = dev_id_auto.c_str();
             std::fprintf(stderr, "[host] auto-detected dev-id from BambuStudio.conf: %s\n", dev_id);

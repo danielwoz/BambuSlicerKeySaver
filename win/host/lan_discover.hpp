@@ -21,8 +21,4 @@ std::vector<LanPrinter> discover_lan_printers(int timeout_s);
 // map from its "access_code" object. Empty if the file or section is absent.
 std::map<std::string, std::string> read_studio_access_codes();
 
-// The last-selected device id from BambuStudio.conf ("user_last_selected_machine"),
-// used as the --dev-id default. Empty if not found.
-std::string read_studio_last_machine();
-
 }  // namespace bbl

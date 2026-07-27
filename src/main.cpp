@@ -87,6 +87,7 @@ static void bootstrap_if_needed(int argc, char** argv) {
 
 #include "vendored/Sha256Portable.hpp"
 #include "vendored/BigIntModExp.hpp"
+#include "bambu_config.h"
 
 #include <openssl/ssl.h>
 #include <openssl/evp.h>
@@ -117,26 +118,10 @@ bool g_verbose = false;
 // ===========================================================================
 // CLI parsing
 // ===========================================================================
-// Resolve the OS-specific BambuStudio user config directory, where the saved
-// key is written by default. NOTE: only the Linux path is tested today; the
-// Windows/macOS branches are best-effort and likely need further work.
+// Resolve the OS-specific BambuStudio user config directory (shared with the
+// Windows host, see src/bambu_config.h).
 static std::string bambustudio_config_dir() {
-#if defined(_WIN32)
-    if (const char* appdata = std::getenv("APPDATA"); appdata && appdata[0])
-        return std::string(appdata) + "\\BambuStudio";
-    return "BambuStudio";
-#elif defined(__APPLE__)
-    if (const char* home = std::getenv("HOME"); home && home[0])
-        return std::string(home) + "/Library/Application Support/BambuStudio";
-    return "BambuStudio";
-#else
-    // Linux / other Unix: honour XDG_CONFIG_HOME, else ~/.config.
-    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && xdg[0])
-        return std::string(xdg) + "/BambuStudio";
-    if (const char* home = std::getenv("HOME"); home && home[0])
-        return std::string(home) + "/.config/BambuStudio";
-    return "BambuStudio";
-#endif
+    return bbl_config::config_dir();
 }
 
 // Best-effort `mkdir -p` of the parent directory of a file path.
@@ -268,37 +253,15 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // Auto-detect device ID from BambuStudio.conf if not provided.
+    // Auto-detect device ID from BambuStudio.conf if not provided (shared helper).
     if (args.dev_id.empty()) {
-        const char* home = std::getenv("HOME");
-        if (home) {
-            std::string conf = std::string(home) + "/.config/BambuStudio/BambuStudio.conf";
-            FILE* f = fopen(conf.c_str(), "r");
-            if (f) {
-                char buf[8192];
-                size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-                buf[n] = 0;
-                fclose(f);
-                const char* key = "\"user_last_selected_machine\":";
-                char* pos = strstr(buf, key);
-                if (pos) {
-                    pos += strlen(key);
-                    while (*pos && *pos != '"') pos++;
-                    if (*pos == '"') {
-                        pos++;
-                        char* end = strchr(pos, '"');
-                        if (end) {
-                            args.dev_id = std::string(pos, end - pos);
-                            LOG_I("auto-detected dev_id from BambuStudio.conf: %s", args.dev_id.c_str());
-                        }
-                    }
-                }
-            }
-        }
-        if (args.dev_id.empty()) {
-            std::fprintf(stderr, "error: --dev-id is required (see --help)\n");
-            return 2;
-        }
+        args.dev_id = bbl_config::detect_last_machine();
+        if (!args.dev_id.empty())
+            LOG_I("auto-detected dev_id from BambuStudio.conf: %s", args.dev_id.c_str());
+    }
+    if (args.dev_id.empty()) {
+        std::fprintf(stderr, "error: --dev-id is required (see --help)\n");
+        return 2;
     }
 
     g_verbose = args.verbose;

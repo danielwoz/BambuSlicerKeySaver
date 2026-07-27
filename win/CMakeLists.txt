@@ -92,6 +92,7 @@ if(WIN32)
   # Standalone AES-128-ECB decoder for the plugin's debug_network_*.log.enc
   # numeric log. Own main().
   add_executable(declog host/declog.cpp)
+  target_include_directories(declog PRIVATE ${SRC})
   target_link_libraries(declog PRIVATE bcrypt)
 
   # ---------------------------------------------------------------------------

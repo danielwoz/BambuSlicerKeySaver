@@ -14,48 +14,21 @@
 #include <cstring>
 #include <vector>
 #include <openssl/evp.h>
+#include "bambu_config.h"
 
-// The log encryption key is loaded from a file rather than hardcoded.
-// Search order: BAMBU_LOG_ENC_KEY env var, then ~/.config/BambuStudio/log_enc.key.
+// The log encryption key is loaded at runtime (not hardcoded) via the shared
+// helper: BAMBU_LOG_ENC_KEY env var, then <config_dir>/log_enc.key.
 static const unsigned char* load_log_key() {
     static unsigned char key[16];
-    static bool loaded = false;
-    if (loaded) return key;
-    loaded = true;
-
-    // Check environment variable first.
-    const char* env_path = std::getenv("BAMBU_LOG_ENC_KEY");
-    if (env_path && env_path[0]) {
-        FILE* f = std::fopen(env_path, "rb");
-        if (f) {
-            size_t n = std::fread(key, 1, 16, f);
-            std::fclose(f);
-            if (n == 16) {
-                std::fprintf(stderr, "loaded log key from env: %s\n", env_path);
-                return key;
-            }
-        }
-        std::fprintf(stderr, "warning: BAMBU_LOG_ENC_KEY=%s failed to load\n", env_path);
+    static bool loaded = false, ok = false;
+    if (!loaded) {
+        loaded = true;
+        ok = bbl_config::load_log_key(key);
+        if (!ok)
+            std::fprintf(stderr, "error: no log encryption key found. Set BAMBU_LOG_ENC_KEY "
+                                 "or place key at <config_dir>/log_enc.key\n");
     }
-
-    // Try platform-specific config directory.
-    const char* home = std::getenv("HOME");
-    if (home && home[0]) {
-        char path[512];
-        snprintf(path, sizeof(path), "%s/.config/BambuStudio/log_enc.key", home);
-        FILE* f = std::fopen(path, "rb");
-        if (f) {
-            size_t n = std::fread(key, 1, 16, f);
-            std::fclose(f);
-            if (n == 16) {
-                std::fprintf(stderr, "loaded log key from: %s\n", path);
-                return key;
-            }
-        }
-    }
-
-    std::fprintf(stderr, "error: no log encryption key found. Set BAMBU_LOG_ENC_KEY or place key at ~/.config/BambuStudio/log_enc.key\n");
-    return nullptr;
+    return ok ? key : nullptr;
 }
 
 int main(int argc, char** argv) {
