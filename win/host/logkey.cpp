@@ -14,7 +14,7 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
-#include "conf_oracle.h"   // kOraclePlain[] + kOracleCipher[] (shared with Linux; no key)
+#include "key_oracle.h"   // bbl_oracle:: printable_score / conf_key_matches / log_key_score (shared with Linux)
 
 namespace bbl {
 
@@ -34,20 +34,11 @@ static bool readable_prot(DWORD p) {
                  PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) != 0;
 }
 
-static int printable_score(const uint8_t* p, int n) {
-    int ok = 0;
-    for (int i = 0; i < n; ++i) {
-        uint8_t c = p[i];
-        if (c == '\n' || c == '\r' || c == '\t' || (c >= 0x20 && c < 0x7f)) ++ok;
-    }
-    return ok * 100 / n;
-}
-
-// AES-128-ECB decrypt `nblocks` 16-byte blocks of `ct` with `key` into `pt`.
-static bool aes_ecb_dec(BCRYPT_ALG_HANDLE hAlg, const uint8_t key[16],
+// AES-ECB decrypt `nbytes` (multiple of 16) of `ct` with a `klen`-byte `key`.
+static bool aes_ecb_dec(BCRYPT_ALG_HANDLE hAlg, const uint8_t* key, int klen,
                         const uint8_t* ct, uint8_t* pt, int nbytes) {
     BCRYPT_KEY_HANDLE hKey = nullptr;
-    if (BCryptGenerateSymmetricKey(hAlg, &hKey, nullptr, 0, (PUCHAR)key, 16, 0) != 0)
+    if (BCryptGenerateSymmetricKey(hAlg, &hKey, nullptr, 0, (PUCHAR)key, (ULONG)klen, 0) != 0)
         return false;
     ULONG res = 0;
     NTSTATUS s = BCryptDecrypt(hKey, (PUCHAR)ct, nbytes, nullptr, nullptr, 0,
@@ -98,8 +89,8 @@ int find_log_key(const char* logpath, const char* keyout) {
                 uint8_t pt[TEST];
                 for (size_t off = 0; off + 16 <= got; off += 4) {
                     ++windows;
-                    if (!aes_ecb_dec(hAlg, bp + off, ct, pt, TEST)) continue;
-                    int sc = printable_score(pt, TEST);
+                    if (!aes_ecb_dec(hAlg, bp + off, 16, ct, pt, TEST)) continue;
+                    int sc = bbl_oracle::printable_score(pt, TEST);
                     if (sc > best) {
                         best = sc; std::memcpy(best_key, bp + off, 16); std::memcpy(best_pt, pt, TEST);
                     }
@@ -131,7 +122,7 @@ int find_log_key(const char* logpath, const char* keyout) {
         // Full-log decrypt to a sidecar file for inspection.
         size_t full = log.size() & ~size_t(15);
         std::vector<uint8_t> out(full);
-        if (aes_ecb_dec(hAlg, best_key, log.data(), out.data(), (int)full)) {
+        if (aes_ecb_dec(hAlg, best_key, 16, log.data(), out.data(), (int)full)) {
             std::string op = std::string(logpath) + ".dec";
             FILE* of = std::fopen(op.c_str(), "wb");
             if (of) { std::fwrite(out.data(), 1, full, of); std::fclose(of);
@@ -167,6 +158,11 @@ int find_config_key(const char* /*confpath (unused: oracle is embedded)*/, const
     BCryptSetProperty(hAlg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_ECB,
                       sizeof(BCRYPT_CHAIN_MODE_ECB), 0);
 
+    // Shared decrypt callback (BCrypt) for the oracle test in key_oracle.h.
+    auto decfn = [&](const uint8_t* key, int klen, const uint8_t* c, uint8_t* p, int n) {
+        return aes_ecb_dec(hAlg, key, klen, c, p, n);
+    };
+
     SYSTEM_INFO si{}; GetSystemInfo(&si);
     uintptr_t maxA = (uintptr_t)si.lpMaximumApplicationAddress, a = 0;
     MEMORY_BASIC_INFORMATION m{};
@@ -182,13 +178,11 @@ int find_config_key(const char* /*confpath (unused: oracle is embedded)*/, const
             SIZE_T got = 0;
             if (ReadProcessMemory(GetCurrentProcess(), (void*)rb, buf.data(), rs, &got) && got >= 16) {
                 const uint8_t* bp = buf.data();
-                uint8_t pt[16];
                 for (size_t off = 0; off + 16 <= got; off += 1) {
                     ++windows;
                     if (!ascii_key16(bp + off)) continue;     // the baked key is 16-char ASCII
                     ++ascii_win;
-                    if (!aes_ecb_dec(hAlg, bp + off, kOracleCipher, pt, 16)) continue;
-                    if (std::memcmp(pt, kOraclePlain, 16) != 0) continue;   // exact oracle match
+                    if (!bbl_oracle::conf_key_matches(bp + off, 16, decfn)) continue;
                     std::memcpy(found_key, bp + off, 16);
                     found = true;
                     std::fprintf(stderr, "[cfgkey] oracle match @%p\n", (void*)(rb + off));
