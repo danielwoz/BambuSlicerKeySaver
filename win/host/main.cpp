@@ -478,6 +478,26 @@ std::string abspath(const std::string& p) {
 // broker + report, then spawns FRESH `bambu_host --flip-gate` worker children in a
 // retry loop until one writes a validated key. A single self-contained command:
 //   bambu_host --auto  [--plugin <dll>] [--out <file>] [--attempts N] [--kill-studio]
+// Resolve the plugin DLL: --plugin, else the installed
+// %APPDATA%\BambuStudio\plugins\bambu_networking.dll, else a previously-fetched
+// cache (--plugin-version). Returns "" if none found (or the user-supplied path
+// as-is so the caller's exists() check can report it). Never downloads -- that is
+// the separate, explicit --fetch-plugin step.
+static std::string resolve_plugin_path(int argc, char** argv) {
+    std::string plugin = arg_value(argc, argv, "--plugin", "");
+    if (plugin.empty()) {
+        if (const char* ad = std::getenv("APPDATA")) {
+            std::string cand = std::string(ad) + "\\BambuStudio\\plugins\\bambu_networking.dll";
+            if (exists(cand)) plugin = cand;
+        }
+    }
+    if (plugin.empty()) {
+        std::string cached = bbl::cached_plugin_path(arg_value(argc, argv, "--plugin-version", ""));
+        if (!cached.empty() && exists(cached)) plugin = cached;
+    }
+    return plugin;
+}
+
 int run_auto(int argc, char** argv, const std::string& ed) {
     char self[MAX_PATH]; GetModuleFileNameA(nullptr, self, MAX_PATH);
     const char* dev = arg_value(argc, argv, "--dev-id", "");
@@ -491,22 +511,8 @@ int run_auto(int argc, char** argv, const std::string& ed) {
     }
     if (!dev[0]) { std::fprintf(stderr, "error: --dev-id is required (see --help)\n"); return 2; }
 
-    // Plugin: --plugin arg -> (--plugin-version CDN download) -> %APPDATA% install -> CDN default.
-    std::string plugin = arg_value(argc, argv, "--plugin", "");
-    if (plugin.empty()) {
-        const char* ad = std::getenv("APPDATA");
-        if (ad) {
-            std::string cand = std::string(ad) + "\\BambuStudio\\plugins\\bambu_networking.dll";
-            if (exists(cand)) plugin = cand;
-        }
-    }
-    if (plugin.empty()) {
-        // Use a previously-fetched cache, but do NOT download here: keep the
-        // network fetch a separate, explicit, visible step (--fetch-plugin) so a
-        // run does not download in the same process.
-        std::string cached = bbl::cached_plugin_path(arg_value(argc, argv, "--plugin-version", ""));
-        if (!cached.empty() && exists(cached)) plugin = cached;
-    }
+    // Plugin: --plugin arg -> installed %APPDATA% DLL -> previously-fetched cache.
+    std::string plugin = resolve_plugin_path(argc, argv);
     if (plugin.empty() || !exists(plugin)) {
         std::fprintf(stderr,
             "[auto] no plugin DLL found. Fetch it once (separately) with:\n"
@@ -770,12 +776,8 @@ static std::string parse_ascii_key(const std::string& path) {
 // get_app_cert), and the slicer RSA key (live --flip-known capture against the
 // first reachable printer -- the key is per-installation, so one printer suffices).
 int run_auto_capture(int argc, char** argv, const std::string& ed) {
-    std::string plugin = arg_value(argc, argv, "--plugin", "");
-    if (plugin.empty()) {
-        if (const char* ad = std::getenv("APPDATA"))
-            plugin = std::string(ad) + "\\BambuStudio\\plugins\\bambu_networking.dll";
-    }
-    if (!exists(plugin)) {
+    std::string plugin = resolve_plugin_path(argc, argv);
+    if (plugin.empty() || !exists(plugin)) {
         std::fprintf(stderr, "[auto-capture] plugin not found (%s) -- is BambuStudio installed?\n", plugin.c_str());
         return 2;
     }
@@ -1248,17 +1250,8 @@ int main(int argc, char** argv) {
         return run_from_disk(keypath.c_str(), embedded_test_envelopes(), out);
     }
 
-    // 1. Resolve the plugin DLL (download if not supplied; --plugin-version picks a build).
-    std::string plugin = arg_value(argc, argv, "--plugin", "");
-    if (plugin.empty()) {
-        const char* ad = std::getenv("APPDATA");
-        if (ad) { std::string cand = std::string(ad) + "\\BambuStudio\\plugins\\bambu_networking.dll"; if (exists(cand)) plugin = cand; }
-    }
-    if (plugin.empty()) {
-        // No auto-download here (see --fetch-plugin): keep fetch separate from run.
-        std::string cached = bbl::cached_plugin_path(arg_value(argc, argv, "--plugin-version", ""));
-        if (!cached.empty() && exists(cached)) plugin = cached;
-    }
+    // 1. Resolve the plugin DLL (--plugin -> installed %APPDATA% DLL -> fetched cache).
+    std::string plugin = resolve_plugin_path(argc, argv);
     if (plugin.empty() || !exists(plugin)) {
         std::fprintf(stderr, "[host] no plugin DLL. Fetch once with: bambu_host --fetch-plugin, or pass --plugin <path>.\n");
         return 2;
