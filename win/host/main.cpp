@@ -57,6 +57,7 @@ namespace bbl { int run_get_app_cert(const char* conf_path, const char* config_k
 namespace bbl { std::string scan_app_identity(); }
 namespace bbl { int decode_appcert_blob(const char* blob_arg, const char* encappkey_arg,
                                          const char* keys_log, const char* key_hex,
+                                         const char* dump_path, int step,
                                          const char* out_pem, bool want_selftest); }
 
 // Verification push-site frames captured by the plugin-message callback on the
@@ -881,11 +882,17 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
             std::fprintf(stderr, "[auto-capture] (3/4) app_identity not found; skipping app cert "
                          "(set BBL_APP_IDENTITY to force)\n");
         } else {
+            // Use the config (network_engine) AES key recovered blind in stage 1;
+            // it decrypts the cloud token out of the conf. Never fall back to a
+            // baked-in key -- if stage 1 did not recover it, skip the app cert.
             std::string cfgk = parse_ascii_key(cfg_key_path);
-            if (cfgk.size() != 16) cfgk = "i4crL3LESLnWapLS";
-            std::fprintf(stderr, "[auto-capture] (3/4) fetching app cert (get_app_cert) for %s...\n", aid.c_str());
-            ok_cert = (bbl::run_get_app_cert(conf_path.c_str(), cfgk.c_str(), aid.c_str(),
-                                             appcert_dir.c_str(), "https://api.bambulab.com") == 0);
+            if (cfgk.size() != 16) {
+                std::fprintf(stderr, "[auto-capture] (3/4) config key not recovered (stage 1); skipping app cert\n");
+            } else {
+                std::fprintf(stderr, "[auto-capture] (3/4) fetching app cert (get_app_cert) for %s...\n", aid.c_str());
+                ok_cert = (bbl::run_get_app_cert(conf_path.c_str(), cfgk.c_str(), aid.c_str(),
+                                                 appcert_dir.c_str(), "https://api.bambulab.com") == 0);
+            }
         }
     }
 
@@ -1232,15 +1239,30 @@ int main(int argc, char** argv) {
     if (has_flag(argc, argv, "--auto-capture")) return run_auto_capture(argc, argv, ed);
     if (has_flag(argc, argv, "--get-app-cert")) {
         // Retrieve the Studio app cert from Bambu's cloud (no plugin needed): decrypt
-        // the token from BambuNetworkEngine.conf and call obn::appcert::fetch.
-        const char* ck = arg_value(argc, argv, "--config-key", "i4crL3LESLnWapLS");
+        // the token from BambuNetworkEngine.conf and call obn::appcert::fetch. The
+        // config (network_engine) AES key that decrypts the conf is a recovered
+        // artifact, never baked in: pass --config-key <16 chars>, point
+        // --config-key-file at a config_key.txt from --find-config-key/--auto-capture,
+        // or set BBL_CONFIG_KEY.
+        std::string ck = arg_value(argc, argv, "--config-key", "");
+        if (ck.empty()) if (const char* e = std::getenv("BBL_CONFIG_KEY")) ck = e;
+        if (ck.empty()) {
+            const char* kf = arg_value(argc, argv, "--config-key-file", nullptr);
+            if (kf && kf[0]) ck = parse_ascii_key(kf);
+        }
+        if (ck.size() != 16) {
+            std::fprintf(stderr, "[get-app-cert] config key required (16 chars). Recover it first with "
+                         "--find-config-key, then pass --config-key <key>, --config-key-file <config_key.txt>, "
+                         "or set BBL_CONFIG_KEY.\n");
+            return 2;
+        }
         const char* aid = arg_value(argc, argv, "--app-identity", nullptr);
         if (!aid || !aid[0]) aid = std::getenv("BBL_APP_IDENTITY");
         std::string conf = arg_value(argc, argv, "--conf", "");
         if (conf.empty()) { if (const char* ad = std::getenv("APPDATA")) conf = std::string(ad) + "\\BambuStudio\\BambuNetworkEngine.conf"; }
         const char* od = arg_value(argc, argv, "--out", "appcert_out");
         const char* api = arg_value(argc, argv, "--api", "https://api.bambulab.com");
-        return bbl::run_get_app_cert(conf.c_str(), ck, aid ? aid : "", od, api);
+        return bbl::run_get_app_cert(conf.c_str(), ck.c_str(), aid ? aid : "", od, api);
     }
     if (has_flag(argc, argv, "--decode-appcert-blob")) {
         // Offline: recover the app private key from a captured get_app_cert response
@@ -1251,9 +1273,11 @@ int main(int argc, char** argv) {
         const char* enc  = arg_value(argc, argv, "--enc-app-key", nullptr);
         const char* keys = arg_value(argc, argv, "--keys", "aes_tap.log");
         const char* khex = arg_value(argc, argv, "--key", nullptr);
-        const char* op   = arg_value(argc, argv, "--out", "app_key_from_blob.pem");
+        const char* dump = arg_value(argc, argv, "--dump", nullptr);
+        int step = std::atoi(arg_value(argc, argv, "--step", "4"));
+        const char* op   = arg_value(argc, argv, "--out", "app_key_from_blob.bin");
         bool st = has_flag(argc, argv, "--selftest");
-        return bbl::decode_appcert_blob(blob, enc, keys, khex, op, st);
+        return bbl::decode_appcert_blob(blob, enc, keys, khex, dump, step, op, st);
     }
 
     // Downstream-only proof (no plugin): a correct 256-byte accumulator capture
@@ -1616,6 +1640,37 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[host] cloud settle %ds: pushall probe rc=%d rx_msgs=%d raw_srv=%d\n",
                      i, prc, g_msg_count.load(), (int)handle.raw_is_server_connected());
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    }
+
+    // --appcert-dump: get_app_cert has fired during the cloud-settle loop above (each
+    // pushall probe over the cloud channel is on the signed-command path). The
+    // decrypted app material and its session keys are now resident, so snapshot the
+    // plugin's memory (VirtualQuery copy -- no DR, no anti-debug trip). That single
+    // snapshot holds the response-blob key R, the session key K, the request, and the
+    // response blob together, so all four can be recovered + correlated offline
+    // (decode-appcert-blob --dump). Answers "what is R" without reversing its
+    // derivation: if R is resident contiguously, the GCM-tag scan finds it.
+    if (has_flag(argc, argv, "--appcert-dump")) {
+        // Fire the privileged signed command (ams_filament_setting) a few times so the
+        // plugin enters enc_msg and fetches+decrypts get_app_cert (it runs upstream of
+        // the sign gate, so the sign itself failing headless is irrelevant here).
+        SignCtx dctx{ &handle, dev_id };
+        int fires = std::atoi(arg_value(argc, argv, "--appcert-dump-fires", "20"));
+        for (int i = 0; i < fires; ++i) { trigger_fn(&dctx); std::this_thread::sleep_for(std::chrono::milliseconds(250)); }
+        int wait_ms = std::atoi(arg_value(argc, argv, "--appcert-dump-wait-ms", "1500"));
+        std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
+        const char* dd = arg_value(argc, argv, "--dump-dir", "appcert_snapshot");
+        std::fprintf(stderr, "[appcert-dump] snapshotting plugin memory -> %s\n", dd);
+        int rc = bbl::dump_plugin_regions(dd);
+        if (has_flag(argc, argv, "--tap") || std::getenv("BBL_TAP_LOG")) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            bbl::stop_cloud_tap();
+        }
+        std::fprintf(stderr, "[appcert-dump] done rc=%d (cloud_tap blocks=%lld)\n",
+                     rc, bbl::cloud_tap_hits());
+        if (broker_up) { TerminateProcess(broker_pi.hProcess, 0);
+                         CloseHandle(broker_pi.hProcess); CloseHandle(broker_pi.hThread); }
+        return rc;
     }
 
     // 9. Blind extraction: drives signing on a background thread, sweeps the heap
