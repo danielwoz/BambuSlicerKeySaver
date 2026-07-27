@@ -1,0 +1,130 @@
+name: release
+
+# Build the Key Saver for Linux and Windows and publish a GitHub release.
+# Trigger by pushing a v* tag, or run manually from the Actions tab / gh CLI
+# with a tag input (the tag is created when the release is cut).
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.2.0)'
+        required: true
+        default: 'v0.2.0'
+      prerelease:
+        description: 'Mark as prerelease'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build xxd curl unzip \
+            libssl-dev libcurl4-openssl-dev zlib1g-dev
+
+      - name: Build (static)
+        run: make -C src -j"$(nproc)" STATIC=1
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp src/bambu_slicer_key_saver dist/
+          [ -f src/bambu_conf_decrypt ] && cp src/bambu_conf_decrypt dist/ || true
+          [ -f src/declog ] && cp src/declog dist/ || true
+          tar -czf dist/bambu_slicer_key_saver-linux-x86_64.tar.gz -C src bambu_slicer_key_saver
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install OpenSSL
+        run: choco install openssl --no-progress -y
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $ossl = "C:/Program Files/OpenSSL-Win64"
+          if (-not (Test-Path $ossl)) { $ossl = "C:/Program Files/OpenSSL" }
+          cmake -S win -B win/build -A x64 -DCMAKE_BUILD_TYPE=Release `
+            -DOPENSSL_ROOT_DIR="$ossl"
+
+      - name: Build
+        run: cmake --build win/build --config Release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $bin = "win/build/Release"
+          Copy-Item "$bin/bambu_host.exe" dist/ -ErrorAction SilentlyContinue
+          Copy-Item "$bin/declog.exe" dist/ -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist/* -DestinationPath dist/bambu_slicer_key_saver-windows-x86_64.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/
+
+  release:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Assemble assets + checksums
+        run: |
+          mkdir -p out
+          find artifacts -type f -exec cp {} out/ \;
+          (cd out && sha256sum * > SHA256SUMS.txt)
+          ls -la out
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "pre=${{ github.event.inputs.prerelease }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "pre=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRE=""
+          [ "${{ steps.tag.outputs.pre }}" = "true" ] && PRE="--prerelease"
+          gh release create "${{ steps.tag.outputs.tag }}" out/* \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.tag.outputs.tag }} — Linux & Windows x86_64" \
+            --notes "Recovers the slicer RSA key (slicer_key.pem), the network-engine config AES key (network_engine.key), and the debug-log AES key (debug_log.key). Linux static binary and Windows host." \
+            $PRE
