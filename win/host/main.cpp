@@ -55,6 +55,9 @@ namespace bbl { int find_log_key(const char* logpath, const char* keyout = nullp
 namespace bbl { int run_get_app_cert(const char* conf_path, const char* config_key,
                                      const char* app_identity, const char* out_dir, const char* api_host); }
 namespace bbl { std::string scan_app_identity(); }
+namespace bbl { int decode_appcert_blob(const char* blob_arg, const char* encappkey_arg,
+                                         const char* keys_log, const char* key_hex,
+                                         const char* out_pem, bool want_selftest); }
 
 // Verification push-site frames captured by the plugin-message callback on the
 // first 'unsigned_studio' push (defined in BambuNetworkingPluginHandle.cpp).
@@ -839,21 +842,21 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
         ok_cfg = exists(cfg_key_path);
     }
 
-    // (2) debug-log AES key: recovered blind, printer-free, using the newest
-    // encrypted debug_network log as the oracle.
+    // (2) debug-log AES key: recovered blind, printer-free, self-contained via the
+    // embedded known-plaintext oracle -- no encrypted debug_network log is required,
+    // so a clean install still yields the key. If one happens to exist it is passed
+    // through so the worker also decrypts it to a sidecar.
     {
-        std::string oracle = newest_debug_log();
-        if (oracle.empty()) {
-            std::fprintf(stderr, "[auto-capture] (2/4) no debug_network_*.log.enc oracle found; skipping log key\n");
-        } else {
-            kill_by_name("fake_broker2.exe"); Sleep(300);
-            std::string work = base + "\\logkey"; CreateDirectoryA(work.c_str(), nullptr);
-            std::string cmd = self_q + plug_q + " --work-dir \"" + work + "\""
-                + " --cloud-settle 4 --find-log-key \"" + oracle + "\" --key-out \"" + log_key_path + "\"";
-            std::fprintf(stderr, "[auto-capture] (2/4) recovering debug-log AES key (oracle %s)...\n", oracle.c_str());
-            run_worker_retry(cmd, work, work + "\\w.err", 120000, log_key_path, 3);
-            ok_log = exists(log_key_path);
-        }
+        kill_by_name("fake_broker2.exe"); Sleep(300);
+        std::string work = base + "\\logkey"; CreateDirectoryA(work.c_str(), nullptr);
+        std::string oracle = newest_debug_log();   // optional: enables the sidecar decrypt only
+        std::string logarg = oracle.empty() ? std::string(" --find-log-key")
+                                            : (" --find-log-key \"" + oracle + "\"");
+        std::string cmd = self_q + plug_q + " --work-dir \"" + work + "\""
+            + " --cloud-settle 4" + logarg + " --key-out \"" + log_key_path + "\"";
+        std::fprintf(stderr, "[auto-capture] (2/4) recovering debug-log AES key (embedded oracle)...\n");
+        run_worker_retry(cmd, work, work + "\\w.err", 120000, log_key_path, 3);
+        ok_log = exists(log_key_path);
     }
 
     // (3) cloud app cert via get_app_cert: recover this account's app_identity
@@ -1238,6 +1241,19 @@ int main(int argc, char** argv) {
         const char* od = arg_value(argc, argv, "--out", "appcert_out");
         const char* api = arg_value(argc, argv, "--api", "https://api.bambulab.com");
         return bbl::run_get_app_cert(conf.c_str(), ck, aid ? aid : "", od, api);
+    }
+    if (has_flag(argc, argv, "--decode-appcert-blob")) {
+        // Offline: recover the app private key from a captured get_app_cert response
+        // "key" blob by GCM-trial-decrypting it with the AES keys aes_tap logged while
+        // the plugin decrypted it (the winning key is the session-derived R). With
+        // --enc-app-key it also identifies K and names the derivation R = f(K).
+        const char* blob = arg_value(argc, argv, "--blob", nullptr);
+        const char* enc  = arg_value(argc, argv, "--enc-app-key", nullptr);
+        const char* keys = arg_value(argc, argv, "--keys", "aes_tap.log");
+        const char* khex = arg_value(argc, argv, "--key", nullptr);
+        const char* op   = arg_value(argc, argv, "--out", "app_key_from_blob.pem");
+        bool st = has_flag(argc, argv, "--selftest");
+        return bbl::decode_appcert_blob(blob, enc, keys, khex, op, st);
     }
 
     // Downstream-only proof (no plugin): a correct 256-byte accumulator capture
@@ -2041,12 +2057,15 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[flip-known] done: ok=%d total flip hits=%lld\n",
                      (int)ok, bbl::verdict_flip_hits());
         bbl::disarm_verdict_flip();
-    } else if (const char* lk = arg_value(argc, argv, "--find-log-key", nullptr)) {
+    } else if (has_flag(argc, argv, "--find-log-key")) {
         // Recover the plugin's AES-128-ECB debug-log key from its LIVE memory
-        // (it's resident now that the plugin is loaded + connected), and decrypt
-        // the log. Drive a bit first so the log has fresh content and the key is
-        // materialised.
+        // (it's resident now that the plugin is loaded + connected) via the embedded
+        // known-plaintext oracle -- self-contained, no encrypted log file needed.
+        // Drive a bit first so the key is materialised; if --find-log-key names a
+        // real encrypted log, it is additionally decrypted to a sidecar.
         for (int i = 0; i < 60; ++i) trigger_fn(&sctx);
+        const char* lk = arg_value(argc, argv, "--find-log-key", nullptr);
+        if (lk && lk[0] == '-') lk = nullptr;   // bare flag -> self-contained (no log file)
         const char* ko = arg_value(argc, argv, "--key-out", nullptr);
         ok = (bbl::find_log_key(lk, ko) == 0);
     } else if (has_flag(argc, argv, "--find-config-key")) {

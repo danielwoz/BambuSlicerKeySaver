@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include "conf_oracle.h"   // kOraclePlain[] + kOracleCipher[] (no key)
+#include "log_oracle.h"    // kLogOraclePlain[] + kLogOracleCipher[] (no key)
 
 namespace bbl_oracle {
 
@@ -46,6 +47,18 @@ inline int log_key_score(const uint8_t* key, const uint8_t* log_first48, DecFn&&
     uint8_t pt[48];
     if (!dec(key, 16, log_first48, pt, 48)) return -1;
     return printable_score(pt, 48);
+}
+
+// True iff `key` (16-byte) is the debug-log AES key, tested against the embedded
+// known-plaintext oracle (log_oracle.h): the key is the one for which
+// AES-ECB-decrypt(kLogOracleCipher) == kLogOraclePlain. Self-contained — needs no
+// pre-existing encrypted log file. A known plaintext/ciphertext pair cannot reveal
+// the key, so the oracle ships safely.
+template <class DecFn>
+inline bool log_key_matches(const uint8_t* key, DecFn&& dec) {
+    uint8_t pt[16];
+    if (!dec(key, 16, kLogOracleCipher, pt, 16)) return false;
+    return std::memcmp(pt, kLogOraclePlain, 16) == 0;
 }
 
 }  // namespace bbl_oracle
