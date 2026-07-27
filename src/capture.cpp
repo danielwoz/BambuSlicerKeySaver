@@ -1,5 +1,5 @@
 #include "capture.h"
-#include "conf_oracle.h"          // kOraclePlain[] + kOracleCipher[] (no key)
+#include "key_oracle.h"           // bbl_oracle:: oracles + scoring (pulls in conf_oracle.h)
 #define OPENSSL_SUPPRESS_DEPRECATED
 #include <openssl/aes.h>
 #include <algorithm>
@@ -219,15 +219,19 @@ static std::vector<std::string> scan_for_conf_json(pid_t pid,
         // oracle ciphertext block back to the oracle plaintext block.
         if (out_key.empty() && rn >= 16) {
             static const int klens[2] = {16, 32};
-            unsigned char dec[16];
+            // AES-ECB decrypt callback for key_oracle.h (n is a multiple of 16).
+            auto dec = [](const uint8_t* key, int klen, const uint8_t* ct,
+                          uint8_t* pt, int n) {
+                AES_KEY dk;
+                if (AES_set_decrypt_key(key, klen * 8, &dk) != 0) return false;
+                for (int b = 0; b < n; b += 16) AES_decrypt(ct + b, pt + b, &dk);
+                return true;
+            };
             for (size_t o = 0; o + 16 <= rn && out_key.empty(); o += 4) {
                 for (int ki = 0; ki < 2; ++ki) {
                     int kl = klens[ki];
                     if (o + (size_t)kl > rn) continue;
-                    AES_KEY dk;
-                    if (AES_set_decrypt_key(buf.data() + o, kl * 8, &dk) != 0) continue;
-                    AES_decrypt(kOracleCipher, dec, &dk);
-                    if (std::memcmp(dec, kOraclePlain, 16) == 0) {
+                    if (bbl_oracle::conf_key_matches(buf.data() + o, kl, dec)) {
                         out_key.assign(buf.data() + o, buf.data() + o + kl);
                         break;
                     }
@@ -266,19 +270,12 @@ static std::vector<std::string> scan_for_conf_json(pid_t pid,
 
 
 // Scan the tracee's readable memory for the AES-128-ECB debug-log key.
-// The approach mirrors scan_for_conf_json but uses the encrypted log file as
-// the oracle: for each 16-byte window in plugin memory, try to AES-ECB-
-// decrypt the log's first 48 bytes; keep the window whose plaintext has the
-// highest printable-ASCII ratio.
-static std::vector<uint8_t> scan_for_log_key(pid_t pid,
-                                              const std::vector<uint8_t>& log_ct) {
-    if (log_ct.size() < 48) return {};
-
-    const int TEST = 48;
-    const uint8_t* ct = log_ct.data();
-    uint8_t pt[TEST];
-    int best_score = 0;
-    std::vector<uint8_t> best_key;
+// Mirrors scan_for_conf_json: for each window in plugin memory, test it against
+// the embedded known-plaintext oracle (log_oracle.h) — the key is the window
+// that decrypts kLogOracleCipher back to kLogOraclePlain. Self-contained; needs
+// no pre-existing encrypted debug_network_*.log.enc file.
+static std::vector<uint8_t> scan_for_log_key(pid_t pid) {
+    std::vector<uint8_t> out_key;
 
     char mpath[64];
     std::snprintf(mpath, sizeof(mpath), "/proc/%d/maps", (int)pid);
@@ -301,6 +298,14 @@ static std::vector<uint8_t> scan_for_log_key(pid_t pid,
         regions.push_back({lo, hi});
     }
 
+    auto dec = [](const uint8_t* key, int klen, const uint8_t* c,
+                  uint8_t* p, int n) {
+        AES_KEY dk;
+        if (AES_set_decrypt_key(key, klen * 8, &dk) != 0) return false;
+        for (int b = 0; b < n; b += 16) AES_decrypt(c + b, p + b, &dk);
+        return true;
+    };
+
     std::vector<uint8_t> buf;
     for (auto& reg : regions) {
         uint64_t lo = reg.first, hi = reg.second;
@@ -310,27 +315,17 @@ static std::vector<uint8_t> scan_for_log_key(pid_t pid,
             size_t want = std::min<uint64_t>(4096, hi - cur);
             (void)read_tracee_mem(pid, cur, buf.data() + (cur - lo), want);
         }
-
-        for (size_t o = 0; o + 16 <= rn; o += 4) {
-            AES_KEY dk;
-            if (AES_set_decrypt_key(buf.data() + o, 128, &dk) != 0) continue;
-            AES_decrypt(ct, pt, &dk);
-            int sc = 0;
-            for (int i = 0; i < TEST; ++i) {
-                uint8_t c = pt[i];
-                if (c == '\n' || c == '\r' || c == '\t' || (c >= 0x20 && c < 0x7f)) ++sc;
+        for (size_t o = 0; o + 16 <= rn && out_key.empty(); o += 4) {
+            if (bbl_oracle::log_key_matches(buf.data() + o, dec)) {
+                out_key.assign(buf.data() + o, buf.data() + o + 16);
             }
-            if (sc > best_score) {
-                best_score = sc;
-                best_key.assign(buf.data() + o, buf.data() + o + 16);
-            }
-            if (sc >= 95) break;
         }
-        if (best_score >= 95) break;
+        if (!out_key.empty()) break;
     }
 
-    LOG_I("[log-key] scanned %zu regions, best score=%d", regions.size(), best_score);
-    return best_key;
+    LOG_I("[log-key] scanned %zu regions, %s", regions.size(),
+          out_key.empty() ? "no match" : "matched embedded oracle");
+    return out_key;
 }
 
 // Scan memory for the byte_load+accumulator pair.
@@ -853,52 +848,16 @@ CaptureResult drive_capture_attach(pid_t target,
         LOG_I("[conf] recovered %d-bit conf AES key from plugin memory (early)",
               (int)R.conf_key.size() * 8);
 
-    // Find the newest encrypted debug log and recover the log AES key.
-    // The log key is the same key used by declog to decrypt debug_network_*.log.enc.
-    {
-        const char* home = std::getenv("HOME");
-        if (home) {
-            std::string logdir = std::string(home) + "/.config/BambuStudio/log";
-            DIR* d = opendir(logdir.c_str());
-            if (d) {
-                std::string newest;
-                time_t newest_mtime = 0;
-                struct dirent* ent;
-                while ((ent = readdir(d)) != nullptr) {
-                    std::string nm = ent->d_name;
-                    if (nm.size() > 8 && nm.substr(nm.size() - 8) == ".log.enc") {
-                        std::string full = logdir + "/" + nm;
-                        struct stat st;
-                        if (stat(full.c_str(), &st) == 0 && (newest.empty() || st.st_mtime > newest_mtime)) {
-                            newest = full;
-                            newest_mtime = st.st_mtime;
-                        }
-                    }
-                }
-                closedir(d);
-                if (!newest.empty()) {
-                    std::vector<uint8_t> log_data;
-                    FILE* lf = fopen(newest.c_str(), "rb");
-                    if (lf) {
-                        fseek(lf, 0, SEEK_END); long lsz = ftell(lf); fseek(lf, 0, SEEK_SET);
-                        if (lsz > 0) {
-                            log_data.resize((size_t)lsz);
-                            fread(log_data.data(), 1, log_data.size(), lf);
-                        }
-                        fclose(lf);
-                    }
-                    if (log_data.size() >= 48) {
-                        R.log_key = scan_for_log_key(target, log_data);
-                        if (!R.log_key.empty())
-                            LOG_I("[log-key] recovered %d-bit log AES key from plugin memory",
-                                  (int)R.log_key.size() * 8);
-                        else
-                            LOG_W("[log-key] log AES key not found in plugin memory");
-                    }
-                }
-            }
-        }
-    }
+    // Recover the debug-log AES key from plugin memory using the embedded
+    // known-plaintext oracle (log_oracle.h). Self-contained — no pre-existing
+    // debug_network_*.log.enc needed. The recovered key is the same one declog
+    // uses to decrypt those logs.
+    R.log_key = scan_for_log_key(target);
+    if (!R.log_key.empty())
+        LOG_I("[log-key] recovered %d-bit log AES key from plugin memory",
+              (int)R.log_key.size() * 8);
+    else
+        LOG_W("[log-key] log AES key not found in plugin memory");
 
     uint64_t acc_va = 0;
     int acc_conv = 0;
