@@ -29,9 +29,9 @@ add_library(keysaver_core STATIC
 )
 target_include_directories(keysaver_core PUBLIC ${SRC})
 
-# NOTE: output.cpp (PEM writing) is intentionally NOT compiled here — it needs
-# OpenSSL and pulls POSIX logging. The pipeline emits the recovered key as hex
-# components (self-validated); convert to PEM with the openssl CLI if desired.
+# NOTE: output.cpp (PKCS#1 PEM writing) is now portable (pure bigint + ASN.1, no
+# OpenSSL, no POSIX logging) and is compiled into bambu_host below, so the Windows
+# host emits the same slicer_key.pem as the Linux tool.
 
 # ---------------------------------------------------------------------------
 # Phase 0 verification: round-trip a synthetic RSA-2048 key through the core.
@@ -84,6 +84,7 @@ if(WIN32)
     ${OBN}/src/json_lite.cpp
     ${OBN}/src/log.cpp
     ${OBN}/src/os_compat.cpp
+    ${SRC}/output.cpp
     ${SRC}/bambu/BambuNetworkingPluginHandle.cpp)
   target_include_directories(bambu_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${SRC} ${OBN}/include)
   target_compile_definitions(bambu_host PRIVATE OBN_VERSION_STRING="02.07.01.99")

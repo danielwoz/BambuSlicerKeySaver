@@ -44,6 +44,7 @@
 #include "host/dump_regions.hpp"
 #include "host/lan_discover.hpp"
 #include "bambu_config.h"
+#include "output.h"
 #include "reconstruct.h"
 #include "bigint.h"
 
@@ -993,6 +994,16 @@ bool try_reconstruct_and_validate(const std::vector<uint8_t>& stream,
                     bn::to_hex_str(rec.p, false).c_str(), bn::to_hex_str(rec.q, false).c_str(),
                     bn::to_hex_str(rec.dp, false).c_str(), bn::to_hex_str(rec.dq, false).c_str());
                 std::fclose(kf);
+            }
+            // Also emit a real PKCS#1 RSA PRIVATE KEY PEM (+ pubkey) via the shared
+            // writer (src/output.cpp), byte-identical to the Linux tool's output.
+            {
+                std::string od(out_path);
+                size_t sl = od.find_last_of("/\\");
+                std::string pem = (sl == std::string::npos ? std::string()
+                                                           : od.substr(0, sl + 1)) + "slicer_key.pem";
+                if (write_pem_output(pem, rec, Ncalc))
+                    std::fprintf(stderr, "[capA] slicer_key.pem written -> %s\n", pem.c_str());
             }
             std::fprintf(stderr, "[capA] *** KEY RECONSTRUCTED + VALIDATED "
                          "(%d/%zu envelopes, N consistent) -> %s ***\n",
