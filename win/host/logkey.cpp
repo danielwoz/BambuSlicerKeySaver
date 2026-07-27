@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include "conf_oracle.h"   // kOraclePlain[] + kOracleCipher[] (shared with Linux; no key)
 
 namespace bbl {
 
@@ -152,31 +153,13 @@ static bool ascii_key16(const uint8_t* p) {
 }
 
 // Recover the plugin's AES-128-ECB CONFIG key (a.k.a. network_engine.key) BLIND
-// from live process memory, using the encrypted BambuNetworkEngine.conf as the
-// oracle: the correct 16-byte key decrypts it to JSON (leading '{', high
-// printable). No foreknowledge of the key value is used in the search; the
-// known-value comparison at the end is only a self-verification of the result.
-// confpath NULL/empty -> %APPDATA%\BambuStudio\BambuNetworkEngine.conf.
+// from live process memory using the embedded known-plaintext oracle
+// (conf_oracle.h, shared with the Linux tool): the key is the 16-byte memory
+// window K for which AES-128-ECB-decrypt(kOracleCipher) == kOraclePlain. A known
+// plaintext/ciphertext pair cannot reveal K, so the oracle ships safely and no
+// real BambuNetworkEngine.conf file is needed. confpath is accepted but unused.
 // Returns 0 on success (prints the recovered key + a non-sensitive preview).
-int find_config_key(const char* confpath, const char* outpath) {
-    std::string cp;
-    if (confpath && confpath[0]) {
-        cp = confpath;
-    } else {
-        const char* ad = std::getenv("APPDATA");
-        if (!ad) { std::fprintf(stderr, "[cfgkey] no APPDATA and no --find-config-key path\n"); return 1; }
-        cp = std::string(ad) + "\\BambuStudio\\BambuNetworkEngine.conf";
-    }
-    std::vector<uint8_t> conf;
-    if (!read_file(cp.c_str(), conf) || conf.size() < 48) {
-        std::fprintf(stderr, "[cfgkey] cannot read conf oracle %s (need >=48 bytes)\n", cp.c_str());
-        return 1;
-    }
-    std::fprintf(stderr, "[cfgkey] oracle: %s (%zu bytes)\n", cp.c_str(), conf.size());
-    const int TEST = 48;  // 3 AES blocks of the encrypted config
-    uint8_t ct[TEST];
-    std::memcpy(ct, conf.data(), TEST);
-
+int find_config_key(const char* /*confpath (unused: oracle is embedded)*/, const char* outpath) {
     BCRYPT_ALG_HANDLE hAlg = nullptr;
     if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_AES_ALGORITHM, nullptr, 0) != 0) {
         std::fprintf(stderr, "[cfgkey] BCryptOpenAlgorithmProvider failed\n"); return 1;
@@ -187,11 +170,11 @@ int find_config_key(const char* confpath, const char* outpath) {
     SYSTEM_INFO si{}; GetSystemInfo(&si);
     uintptr_t maxA = (uintptr_t)si.lpMaximumApplicationAddress, a = 0;
     MEMORY_BASIC_INFORMATION m{};
-    long long windows = 0, ascii_win = 0, hits = 0;
-    int best = 0; uint8_t best_key[16]{}; uint8_t best_pt[TEST]{};
+    long long windows = 0, ascii_win = 0;
+    uint8_t found_key[16]{}; bool found = false;
     std::vector<uint8_t> buf;
 
-    while (a < maxA && VirtualQuery((void*)a, &m, sizeof m)) {
+    while (!found && a < maxA && VirtualQuery((void*)a, &m, sizeof m)) {
         uintptr_t rb = (uintptr_t)m.BaseAddress; size_t rs = m.RegionSize;
         if (m.State == MEM_COMMIT && readable_prot(m.Protect) &&
             rs >= 16 && rs < (size_t)256 * 1024 * 1024) {
@@ -199,36 +182,32 @@ int find_config_key(const char* confpath, const char* outpath) {
             SIZE_T got = 0;
             if (ReadProcessMemory(GetCurrentProcess(), (void*)rb, buf.data(), rs, &got) && got >= 16) {
                 const uint8_t* bp = buf.data();
-                uint8_t pt[TEST];
+                uint8_t pt[16];
                 for (size_t off = 0; off + 16 <= got; off += 1) {
                     ++windows;
-                    if (!ascii_key16(bp + off)) continue;     // cheap prefilter
+                    if (!ascii_key16(bp + off)) continue;     // the baked key is 16-char ASCII
                     ++ascii_win;
-                    if (!aes_ecb_dec(hAlg, bp + off, ct, pt, TEST)) continue;
-                    if (pt[0] != '{') continue;               // config plaintext is JSON
-                    int sc = printable_score(pt, TEST);
-                    if (sc > best) { best = sc; std::memcpy(best_key, bp + off, 16); std::memcpy(best_pt, pt, TEST); }
-                    if (sc >= 95) {
-                        ++hits;
-                        std::fprintf(stderr, "[cfgkey] candidate @%p key(ascii)='%.16s' pt='%.*s'\n",
-                                     (void*)(rb + off), (const char*)(bp + off), 32, (const char*)pt);
-                    }
+                    if (!aes_ecb_dec(hAlg, bp + off, kOracleCipher, pt, 16)) continue;
+                    if (std::memcmp(pt, kOraclePlain, 16) != 0) continue;   // exact oracle match
+                    std::memcpy(found_key, bp + off, 16);
+                    found = true;
+                    std::fprintf(stderr, "[cfgkey] oracle match @%p\n", (void*)(rb + off));
+                    break;
                 }
             }
         }
         a = rb + rs; if (rs == 0) break;
     }
-    std::fprintf(stderr, "[cfgkey] scanned %lld windows (%lld ascii), %lld JSON hits; best score=%d\n",
-                 windows, ascii_win, hits, best);
+    std::fprintf(stderr, "[cfgkey] scanned %lld windows (%lld ascii)\n", windows, ascii_win);
     BCryptCloseAlgorithmProvider(hAlg, 0);
-    if (best >= 90 && best_pt[0] == '{') {
-        std::fprintf(stderr, "[cfgkey] RECOVERED config key (ascii)='%.16s' hex=", (const char*)best_key);
-        for (int i = 0; i < 16; ++i) std::fprintf(stderr, "%02x", best_key[i]);
-        std::fprintf(stderr, "\n[cfgkey] conf preview='%.*s'\n", 40, (const char*)best_pt);
+    if (found) {
+        std::fprintf(stderr, "[cfgkey] RECOVERED config key (ascii)='%.16s' hex=", (const char*)found_key);
+        for (int i = 0; i < 16; ++i) std::fprintf(stderr, "%02x", found_key[i]);
+        std::fprintf(stderr, "\n");
         if (outpath && outpath[0]) {
             if (FILE* of = std::fopen(outpath, "wb")) {
-                std::fprintf(of, "network_engine.key (AES-128-ECB)\nascii: %.16s\nhex:   ", (const char*)best_key);
-                for (int i = 0; i < 16; ++i) std::fprintf(of, "%02x", best_key[i]);
+                std::fprintf(of, "network_engine.key (AES-128-ECB)\nascii: %.16s\nhex:   ", (const char*)found_key);
+                for (int i = 0; i < 16; ++i) std::fprintf(of, "%02x", found_key[i]);
                 std::fprintf(of, "\n");
                 std::fclose(of);
                 std::fprintf(stderr, "[cfgkey] wrote key -> %s\n", outpath);
@@ -236,7 +215,7 @@ int find_config_key(const char* confpath, const char* outpath) {
         }
         return 0;
     }
-    std::fprintf(stderr, "[cfgkey] no JSON-decrypting key found resident in plugin memory\n");
+    std::fprintf(stderr, "[cfgkey] no oracle-matching key found resident in plugin memory\n");
     return 1;
 }
 
