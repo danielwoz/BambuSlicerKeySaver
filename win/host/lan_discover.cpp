@@ -136,4 +136,25 @@ std::map<std::string, std::string> read_studio_access_codes() {
     return codes;
 }
 
+// The device id BambuStudio last had selected, read from BambuStudio.conf's
+// "user_last_selected_machine" field. Used as the --dev-id default so the tool
+// self-configures for a logged-in install. Returns "" if not found.
+std::string read_studio_last_machine() {
+    const char* appdata = std::getenv("APPDATA");
+    if (!appdata) return "";
+    std::string path = std::string(appdata) + "\\BambuStudio\\BambuStudio.conf";
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return "";
+    std::string raw;
+    char b[8192];
+    size_t n;
+    while ((n = std::fread(b, 1, sizeof b, f)) > 0) raw.append(b, n);
+    std::fclose(f);
+
+    std::smatch m;
+    std::regex re("\"user_last_selected_machine\"\\s*:\\s*\"([^\"]+)\"");
+    if (std::regex_search(raw, m, re)) return m[1].str();
+    return "";
+}
+
 }  // namespace bbl

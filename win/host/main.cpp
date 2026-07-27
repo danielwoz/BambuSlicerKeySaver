@@ -480,6 +480,14 @@ std::string abspath(const std::string& p) {
 int run_auto(int argc, char** argv, const std::string& ed) {
     char self[MAX_PATH]; GetModuleFileNameA(nullptr, self, MAX_PATH);
     const char* dev = arg_value(argc, argv, "--dev-id", "");
+    std::string dev_auto;
+    if (!dev[0]) {
+        dev_auto = bbl::read_studio_last_machine();
+        if (!dev_auto.empty()) {
+            dev = dev_auto.c_str();
+            std::fprintf(stderr, "[auto] auto-detected dev-id from BambuStudio.conf: %s\n", dev);
+        }
+    }
     if (!dev[0]) { std::fprintf(stderr, "error: --dev-id is required (see --help)\n"); return 2; }
 
     // Plugin: --plugin arg -> (--plugin-version CDN download) -> %APPDATA% install -> CDN default.
@@ -702,6 +710,24 @@ static int run_worker(const std::string& cmd, const std::string& work,
     return rc;
 }
 
+// A worker's plugin init can hit transient VMProtect instability; retry with a
+// fresh process (a lingering broker is cleared between tries) until the artifact
+// lands or attempts run out. Returns 0 if the success_file was produced.
+static int run_worker_retry(const std::string& cmd, const std::string& work,
+                            const std::string& logbase, DWORD timeout_ms,
+                            const std::string& success_file, int attempts) {
+    for (int i = 1; i <= attempts; ++i) {
+        if (exists(success_file)) return 0;
+        kill_by_name("fake_broker2.exe"); Sleep(300);
+        std::string logp = (i == 1) ? logbase : logbase + "." + std::to_string(i);
+        run_worker(cmd, work, logp, timeout_ms, success_file);
+        if (exists(success_file)) return 0;
+        if (i < attempts)
+            std::fprintf(stderr, "[auto-capture]   attempt %d/%d did not land; retrying\n", i, attempts);
+    }
+    return exists(success_file) ? 0 : 1;
+}
+
 // Newest %APPDATA%\BambuStudio\log\debug_network_*.log.enc -- the oracle the
 // log-key recovery decrypts against. Returns "" if none. Skips *.dec sidecars.
 static std::string newest_debug_log() {
@@ -805,7 +831,7 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
         std::string cmd = self_q + plug_q + " --work-dir \"" + work + "\""
             + " --cloud-settle 4 --find-config-key --out \"" + cfg_key_path + "\"";
         std::fprintf(stderr, "[auto-capture] (1/4) recovering config AES key (network_engine.key)...\n");
-        run_worker(cmd, work, work + "\\w.err", 120000, cfg_key_path);
+        run_worker_retry(cmd, work, work + "\\w.err", 120000, cfg_key_path, 3);
         ok_cfg = exists(cfg_key_path);
     }
 
@@ -821,7 +847,7 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
             std::string cmd = self_q + plug_q + " --work-dir \"" + work + "\""
                 + " --cloud-settle 4 --find-log-key \"" + oracle + "\" --key-out \"" + log_key_path + "\"";
             std::fprintf(stderr, "[auto-capture] (2/4) recovering debug-log AES key (oracle %s)...\n", oracle.c_str());
-            run_worker(cmd, work, work + "\\w.err", 120000, log_key_path);
+            run_worker_retry(cmd, work, work + "\\w.err", 120000, log_key_path, 3);
             ok_log = exists(log_key_path);
         }
     }
@@ -838,7 +864,7 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
             std::string cmd = self_q + plug_q + " --work-dir \"" + work + "\""
                 + " --cloud-settle 6 --find-app-identity --out \"" + aid_path + "\"";
             std::fprintf(stderr, "[auto-capture] (3/4) recovering app_identity from plugin...\n");
-            run_worker(cmd, work, work + "\\w.err", 120000, aid_path);
+            run_worker_retry(cmd, work, work + "\\w.err", 120000, aid_path, 3);
             if (FILE* f = std::fopen(aid_path.c_str(), "rb")) {
                 char b[128]; size_t n = std::fread(b, 1, sizeof b - 1, f); b[n] = 0; std::fclose(f); aid = b;
             }
@@ -1119,6 +1145,16 @@ int run_from_disk(const char* pem_path, const std::vector<Envelope>& envs, const
 int main(int argc, char** argv) {
     const char* out      = arg_value(argc, argv, "--out", "slicer_key_windows.txt");
     const char* dev_id   = arg_value(argc, argv, "--dev-id", "");
+    // Auto-detect the device id from BambuStudio.conf when --dev-id is not given,
+    // so a logged-in install needs no manual device argument.
+    std::string dev_id_auto;
+    if (!dev_id[0]) {
+        dev_id_auto = bbl::read_studio_last_machine();
+        if (!dev_id_auto.empty()) {
+            dev_id = dev_id_auto.c_str();
+            std::fprintf(stderr, "[host] auto-detected dev-id from BambuStudio.conf: %s\n", dev_id);
+        }
+    }
     const char* user     = arg_value(argc, argv, "--username", "bblp");
     const char* access   = arg_value(argc, argv, "--access-code", "offline");
     const char* work_arg = arg_value(argc, argv, "--work-dir", ".");
