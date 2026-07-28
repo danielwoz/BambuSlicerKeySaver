@@ -75,6 +75,7 @@ if(WIN32)
     host/cloud_tap.cpp
     host/rng_tap.cpp
     host/aes_tap.cpp
+    host/blob_decode.cpp
     host/instr_cb.cpp
     host/app_key_sweep.cpp
     host/death_diag.cpp
@@ -83,6 +84,7 @@ if(WIN32)
     host/app_cert_fetch.cpp
     host/obn_http_winhttp.cpp
     host/gui.cpp
+    appcert_recover.cpp
     broker/fake_broker2.cpp
     ${OBN}/src/app_cert.cpp
     ${OBN}/src/json_lite.cpp

@@ -260,7 +260,12 @@ void scan_once() {
     uint8_t* addr = (uint8_t*)si.lpMinimumApplicationAddress;
     uint8_t* maxa = (uint8_t*)si.lpMaximumApplicationAddress;
     MEMORY_BASIC_INFORMATION mbi;
-    std::vector<uint8_t> win(8192);
+    // Capture window; enlarge via BBL_TAP_WIN to catch a full chunked HTTP response
+    // (get_app_cert's reply is Transfer-Encoding: chunked and can exceed 8 KB, so the
+    // trailing key/crl fields fall outside the default window).
+    size_t winsz = 8192;
+    if (const char* w = std::getenv("BBL_TAP_WIN")) { long v = std::atol(w); if (v >= 8192 && v <= (1<<20)) winsz = (size_t)v; }
+    std::vector<uint8_t> win(winsz);
     std::vector<uint8_t> der(16384);          // holds one outer DER cert (~1KB)
     RawHit hits[64];
 

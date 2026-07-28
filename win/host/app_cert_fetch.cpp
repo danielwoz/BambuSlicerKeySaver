@@ -120,6 +120,24 @@ int scan_region_appid(const char* base, size_t n, char* outbuf, int cur_best) {
 
 }  // namespace
 
+// Load the cloud Bearer token + account uid from BambuNetworkEngine.conf (AES-128-ECB
+// with the global config key). Returns false and sets `err` on failure. Shared by
+// run_get_app_cert and the standalone appcert_demo so the config-decrypt lives once.
+bool load_cloud_token(const char* conf_path, const char* config_key,
+                      std::string& token, std::string& uid, std::string& err) {
+    std::string conf;
+    if (!read_file(conf_path, conf)) { err = std::string("cannot read ") + conf_path +
+        " (is BambuStudio installed + logged in?)"; return false; }
+    std::string pt = aes128_ecb_decrypt(conf, config_key);
+    if (pt.find("\"token\"") == std::string::npos) {
+        err = "config decrypt failed or no token (wrong config key?)"; return false;
+    }
+    token = json_str(pt, "token");
+    uid = json_num(pt, "user_id");
+    if (token.empty()) { err = "no cloud token in config"; return false; }
+    return true;
+}
+
 // Scan this process's committed memory for the account's app_identity, resident
 // after the plugin builds a get_app_cert request: "GLOF<digits>-<hex...>" where the
 // hex tail is the app-cert CN hex (~12) followed by the app-key token (16). Returns
@@ -147,20 +165,9 @@ int run_get_app_cert(const char* conf_path, const char* config_key,
         std::fprintf(stderr, "[app-cert] no app_identity (pass --app-identity or set BBL_APP_IDENTITY)\n");
         return 2;
     }
-    std::string conf;
-    if (!read_file(conf_path, conf)) {
-        std::fprintf(stderr, "[app-cert] cannot read %s (is BambuStudio installed + logged in?)\n", conf_path);
-        return 2;
-    }
-    std::string pt = aes128_ecb_decrypt(conf, config_key);
-    if (pt.find("\"token\"") == std::string::npos) {
-        std::fprintf(stderr, "[app-cert] config decrypt failed or no token (wrong --config-key?)\n");
-        return 2;
-    }
-    std::string token = json_str(pt, "token");
-    std::string uid = json_num(pt, "user_id");
-    if (token.empty()) {
-        std::fprintf(stderr, "[app-cert] no cloud token in config\n");
+    std::string token, uid, cerr;
+    if (!load_cloud_token(conf_path, config_key, token, uid, cerr)) {
+        std::fprintf(stderr, "[app-cert] %s\n", cerr.c_str());
         return 2;
     }
     std::fprintf(stderr, "[app-cert] token %zu chars, uid=%s; fetching get_app_cert...\n", token.size(), uid.c_str());

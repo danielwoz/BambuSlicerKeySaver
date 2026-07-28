@@ -7,7 +7,7 @@ the keys that identify your slicer to Bambu's services:
   * Slicer RSA key          (slicer_key.txt / slicer_key.pem)
   * Config AES key           (network_engine.key / config_key.txt)
   * Debug-log AES key        (debug_log.key / log_key.txt)
-  * Cloud app certificate    (appcert_out\app_cert.pem)
+  * Cloud app key            (appcert_out\app_key.pem, with app_cert.pem)
 
 
 HOW TO USE
