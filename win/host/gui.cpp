@@ -49,9 +49,11 @@ void ui_done(void*, int n) {
 bool ui_confirm_no_printer(void*) {
     int r = MessageBoxW(g_main,
         L"No Bambu printer was found on your network.\n\n"
-        L"The slicer RSA key needs a printer reachable on your LAN. The config, "
-        L"debug-log and app-certificate keys do not.\n\n"
-        L"Continue and extract the other keys?",
+        L"The config, debug-log and app-certificate keys will still be extracted "
+        L"normally. The slicer RSA key will be attempted WITHOUT a printer — a "
+        L"slower, best-effort capture that can take several minutes and may not "
+        L"succeed every run.\n\n"
+        L"Continue?",
         L"No printer found", MB_YESNO | MB_ICONWARNING);
     return r == IDYES;
 }

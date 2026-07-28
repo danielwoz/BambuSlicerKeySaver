@@ -949,10 +949,7 @@ int run_auto_capture(int argc, char** argv, const std::string& ed, const Capture
     // attempt is a fresh process, so one landing suffices; the key is
     // per-installation, so any one reachable printer works).
     ui_status("Capturing slicer RSA key (this is the slow step)…");
-    if (printers.empty()) {
-        std::fprintf(stderr, "[auto-capture] (4/4) no LAN printer found; skipping slicer-key capture "
-                     "(is this PC on the printer's subnet?)\n");
-    } else {
+    if (!printers.empty()) {
         for (const auto& p : printers) {
             if (ok_slicer) break;
             auto it = codes.find(p.serial);
@@ -986,6 +983,43 @@ int run_auto_capture(int argc, char** argv, const std::string& ed, const Capture
                 } else {
                     std::fprintf(stderr, "[auto-capture] attempt %d: no key; retrying\n", i);
                 }
+            }
+        }
+    }
+
+    // Printer-free fallback: if no printer was reachable (or the printer attempts
+    // did not land), drive the sign locally through the IN-PROCESS fake printer
+    // (flip-gate). No printer, no network, and no report file needed -- the broker
+    // synthesizes the status report. The capture is probabilistic, so retry across
+    // fresh processes with a generous scan budget. No BAMBU_FAKE_REPORT is set, so
+    // the worker's broker uses its synthesized report.
+    if (!ok_slicer) {
+        std::string dev_pf = bbl_config::detect_last_machine();
+        std::fprintf(stderr, "[auto-capture] (4/4) %s; trying printer-free capture (fake printer)\n",
+                     printers.empty() ? "no LAN printer found" : "printer attempts did not land");
+        for (int i = 1; i <= max_runs && !ok_slicer; ++i) {
+            kill_by_name("fake_broker2.exe"); Sleep(300);
+            std::string work = base + "\\pfree_" + std::to_string(i);
+            CreateDirectoryA(work.c_str(), nullptr);
+            std::string out = work + "\\live_key.txt";
+            std::string cmd = self_q + plug_q
+                + (dev_pf.empty() ? std::string() : (" --dev-id " + dev_pf))
+                + " --cert-dir \"" + cert + "\" --work-dir \"" + work + "\" --out \"" + out + "\""
+                + (have_diag ? (" --diag-known \"" + diag + "\"") : std::string())
+                + " --cloud-settle 4 --scan-passes 60 --scan-budget-ms 2000 --sign-sleep-ms 1 --flip-gate";
+            { char sb[128]; std::snprintf(sb, sizeof sb,
+                "Capturing slicer RSA key without a printer (attempt %d/%d)…", i, max_runs);
+              ui_status(sb); }
+            std::fprintf(stderr, "[auto-capture] (4/4) printer-free flip-gate attempt %d/%d\n", i, max_runs);
+            run_worker(cmd, work, work + "\\cap.err", 200000, out);
+            if (exists(out)) {
+                CopyFileA(out.c_str(), out_final.c_str(), FALSE);
+                CopyFileA(out.c_str(), (res + "\\slicer_key.txt").c_str(), FALSE);
+                ok_slicer = true;
+                std::fprintf(stderr, "[auto-capture] *** SLICER KEY CAPTURED (printer-free) -> %s ***\n",
+                             out_final.c_str());
+            } else {
+                std::fprintf(stderr, "[auto-capture] printer-free attempt %d: no key; retrying\n", i);
             }
         }
     }
