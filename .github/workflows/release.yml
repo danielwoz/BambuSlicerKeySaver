@@ -79,16 +79,34 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
+          New-Item -ItemType Directory -Force dist/pkg | Out-Null
           $bin = "win/build/Release"
-          Copy-Item "$bin/bambu_host.exe" dist/ -ErrorAction SilentlyContinue
-          Copy-Item "$bin/declog.exe" dist/ -ErrorAction SilentlyContinue
-          Compress-Archive -Path dist/* -DestinationPath dist/bambu_slicer_key_saver-windows-x86_64.zip -Force
+          # The fake-printer broker is compiled into bambu_host (single binary),
+          # so there is no fake_broker2.exe to ship.
+          Copy-Item "$bin/bambu_host.exe" dist/pkg/ -ErrorAction SilentlyContinue
+          Copy-Item "$bin/declog.exe"     dist/pkg/ -ErrorAction SilentlyContinue
+
+          # Bundle the OpenSSL runtime DLLs the host links (TLS for the in-process
+          # broker + libcrypto) so it runs on a clean machine with no OpenSSL install.
+          $ossl = "C:/Program Files/OpenSSL-Win64"
+          if (-not (Test-Path $ossl)) { $ossl = "C:/Program Files/OpenSSL" }
+          Copy-Item "$ossl/bin/libssl-*-x64.dll"    dist/pkg/ -ErrorAction SilentlyContinue
+          Copy-Item "$ossl/bin/libcrypto-*-x64.dll" dist/pkg/ -ErrorAction SilentlyContinue
+
+          # Bundle the VC++ runtime so no separate redistributable install is needed.
+          foreach ($d in 'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll') {
+            Copy-Item "C:/Windows/System32/$d" dist/pkg/ -ErrorAction SilentlyContinue
+          }
+
+          Write-Host "Package contents:"; Get-ChildItem dist/pkg | Format-Table Name,Length
+          if (-not (Test-Path dist/pkg/bambu_host.exe)) { throw "bambu_host.exe missing" }
+          if (-not (Get-ChildItem dist/pkg/libssl-*-x64.dll)) { throw "OpenSSL libssl DLL missing" }
+          Compress-Archive -Path dist/pkg/* -DestinationPath dist/bambu_slicer_key_saver-windows-x86_64.zip -Force
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: dist/
+          path: dist/bambu_slicer_key_saver-windows-x86_64.zip
 
   release:
     needs: [linux, windows]

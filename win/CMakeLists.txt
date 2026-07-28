@@ -80,6 +80,7 @@ if(WIN32)
     host/lan_discover.cpp
     host/app_cert_fetch.cpp
     host/obn_http_winhttp.cpp
+    broker/fake_broker2.cpp
     ${OBN}/src/app_cert.cpp
     ${OBN}/src/json_lite.cpp
     ${OBN}/src/log.cpp
@@ -88,7 +89,10 @@ if(WIN32)
     ${SRC}/bambu/BambuNetworkingPluginHandle.cpp)
   target_include_directories(bambu_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${SRC} ${OBN}/include)
   target_compile_definitions(bambu_host PRIVATE OBN_VERSION_STRING="02.07.01.99")
-  target_link_libraries(bambu_host PRIVATE verify_fake keysaver_core ws2_32 psapi bcrypt ncrypt OpenSSL::Crypto winhttp)
+  # OpenSSL::SSL (in addition to Crypto) for the in-process fake-printer broker's
+  # TLS server; ncrypt/bcrypt for the native AES-key recovery; winhttp for the
+  # app-cert cloud fetch.
+  target_link_libraries(bambu_host PRIVATE verify_fake keysaver_core ws2_32 psapi bcrypt ncrypt OpenSSL::SSL OpenSSL::Crypto winhttp)
 
   # Standalone AES-128-ECB decoder for the plugin's debug_network_*.log.enc
   # numeric log. Own main().

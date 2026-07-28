@@ -55,6 +55,10 @@ namespace bbl { int find_log_key(const char* logpath, const char* keyout = nullp
 namespace bbl { int run_get_app_cert(const char* conf_path, const char* config_key,
                                      const char* app_identity, const char* out_dir, const char* api_host); }
 namespace bbl { std::string scan_app_identity(); }
+// In-process fake-printer broker (win/broker/fake_broker2.cpp), folded into the
+// host so it ships as a single binary. Declared at global scope so the anon-
+// namespace helpers below bind to the real (external-linkage) definitions.
+namespace bbl_broker { int serve(unsigned short port, const char* dev_id, const char* cert_out, const char* key_out); void stop(); }
 
 // Verification push-site frames captured by the plugin-message callback on the
 // first 'unsigned_studio' push (defined in BambuNetworkingPluginHandle.cpp).
@@ -415,6 +419,28 @@ bool spawn_broker(const std::string& exe, const char* dev_id, const std::string&
     return true;
 }
 
+// --- In-process fake-printer broker -------------------------------------------
+// The broker (win/broker/fake_broker2.cpp) is compiled into this host and run on
+// a background thread, so the tool ships as a SINGLE binary -- no fake_broker2.exe
+// to locate or bundle. serve() blocks until stop() closes its listen socket;
+// start_broker() launches it, stop_broker() stops + joins it. Teardown is
+// idempotent (safe to call at any of the several capture-path exit points).
+static std::thread g_broker_thread;
+
+static bool start_broker(const char* dev_id, const std::string& cert_out) {
+    std::string dev  = dev_id ? dev_id : "";
+    std::string cert = cert_out;
+    g_broker_thread = std::thread([dev, cert]() {
+        bbl_broker::serve(8883, dev.c_str(), cert.c_str(), nullptr);
+    });
+    std::fprintf(stderr, "[host] fake printer (broker) running in-process on 127.0.0.1:8883\n");
+    return true;
+}
+static void stop_broker() {
+    bbl_broker::stop();
+    if (g_broker_thread.joinable()) g_broker_thread.join();
+}
+
 std::string exe_dir() {
     char buf[MAX_PATH];
     GetModuleFileNameA(nullptr, buf, MAX_PATH);
@@ -530,7 +556,9 @@ int run_auto(int argc, char** argv, const std::string& ed) {
                                 "broker\\fake_broker.exe", "win\\broker\\fake_broker.exe"};
         for (const char* n : names) { std::string c = find_up(ed, n, 6); if (!c.empty()) { broker = c; break; } }
     }
-    if (broker.empty() || !exists(broker)) { std::fprintf(stderr, "[auto] cannot find fake_broker2.exe (give --broker)\n"); return 2; }
+    // The broker is compiled into each worker (in-process), so an external
+    // fake_broker2.exe is optional. If none is found, proceed without it.
+    if (broker.empty() || !exists(broker)) broker.clear();
 
     // cert-dir (dir holding slicer_base64.cer) -- optional; worker re-resolves too.
     std::string cert = arg_value(argc, argv, "--cert-dir", "");
@@ -1307,16 +1335,10 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // 3. Resolve the bundled fake-printer broker.
-    std::string broker = arg_value(argc, argv, "--broker", "");
-    if (broker.empty()) broker = find_up(ed, "fake_broker2.exe", 0);
-    if (broker.empty()) broker = find_up(ed, "broker\\fake_broker2.exe", 1);
-    if (broker.empty()) broker = find_up(ed, "win\\broker\\fake_broker2.exe", 6);
-    if (broker.empty() || !exists(broker)) {
-        std::fprintf(stderr, "[host] cannot find fake_broker2.exe (give --broker)\n");
-        return 2;
-    }
-    std::fprintf(stderr, "[host] broker: %s\n", broker.c_str());
+    // 3. The fake-printer broker is compiled into this binary and started
+    //    in-process below (start_broker) -- there is no external fake_broker2.exe
+    //    to locate or ship. --broker is accepted but ignored for backward compat.
+    (void)arg_value(argc, argv, "--broker", "");
 
     // 4. Satisfy the plugin's host verification so this host may load it.
     std::fprintf(stderr, "[host] installing host-verification shim...\n");
@@ -1379,10 +1401,9 @@ int main(int argc, char** argv) {
     const bool offline = has_flag(argc, argv, "--offline");
     const char* printer_ip = arg_value(argc, argv, "--printer-ip", nullptr);
     const bool use_broker = !offline && !printer_ip;
-    PROCESS_INFORMATION broker_pi{};
     bool broker_up = false;
     if (use_broker) {
-        if (!spawn_broker(broker, dev_id, printer_cer, broker_pi)) return 1;
+        if (!start_broker(dev_id, printer_cer)) return 1;
         broker_up = true;
         for (int i = 0; i < 80 && !exists(printer_cer); ++i)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1477,7 +1498,7 @@ int main(int argc, char** argv) {
     BambuNetworkingPluginHandle handle(cfg);
     if (!handle.init()) {
         std::fprintf(stderr, "[host] FAIL: handle.init()\n");
-        if (broker_up) TerminateProcess(broker_pi.hProcess, 0);
+        if (broker_up) stop_broker();
         return 1;
     }
 
@@ -1509,7 +1530,7 @@ int main(int argc, char** argv) {
         const char* dd = arg_value(argc, argv, "--dump-dir", "regions_dump");
         std::fprintf(stderr, "[host] --dump-regions -> %s\n", dd);
         int rc = bbl::dump_plugin_regions(dd);
-        if (broker_up) TerminateProcess(broker_pi.hProcess, 0);
+        if (broker_up) stop_broker();
         return rc;
     }
 
@@ -1545,10 +1566,7 @@ int main(int argc, char** argv) {
                              bbl::cloud_tap_hits());
             }
             std::fprintf(stderr, "[host] --print-info: done (exiting before extract)\n");
-            if (broker_up) {
-                TerminateProcess(broker_pi.hProcess, 0);
-                CloseHandle(broker_pi.hProcess); CloseHandle(broker_pi.hThread);
-            }
+            if (broker_up) stop_broker();
             return pi.serial_seen ? 0 : 3;
         }
     }
@@ -1672,7 +1690,7 @@ int main(int argc, char** argv) {
             bbl::stop_cloud_tap();
             std::fprintf(stderr, "[cloud] cloud_tap captured %lld blocks\n", bbl::cloud_tap_hits());
         }
-        if (broker_up) { TerminateProcess(broker_pi.hProcess, 0); CloseHandle(broker_pi.hProcess); CloseHandle(broker_pi.hThread); }
+        if (broker_up) stop_broker();
         return rc == 0 ? 0 : 1;
     }
 
@@ -1687,7 +1705,7 @@ int main(int argc, char** argv) {
         if (!certid || !certid[0]) certid = std::getenv("BBL_APP_CERT_ID");
         if (!certid || !certid[0]) {
             std::fprintf(stderr, "[sign] set --app-cert-id or BBL_APP_CERT_ID (this account's app cert serial) to locate the security context\n");
-            if (broker_up) { TerminateProcess(broker_pi.hProcess, 0); CloseHandle(broker_pi.hProcess); CloseHandle(broker_pi.hThread); }
+            if (broker_up) stop_broker();
             return 2;
         }
         const int certid_len = (int)std::strlen(certid);
@@ -1871,7 +1889,7 @@ int main(int argc, char** argv) {
         }
         if (sf) std::fclose(sf);
         std::fprintf(stderr, "[sign] captured %d sign(s) -> %s\n", got, outpath.c_str());
-        if (broker_up) { TerminateProcess(broker_pi.hProcess, 0); CloseHandle(broker_pi.hProcess); CloseHandle(broker_pi.hThread); }
+        if (broker_up) stop_broker();
         return got > 0 ? 0 : 1;
     }
 
@@ -2143,10 +2161,7 @@ int main(int argc, char** argv) {
                                 SLICER_PUBLIC_N_HEX, attempts);
     }
 
-    if (broker_up) {
-        TerminateProcess(broker_pi.hProcess, 0);
-        CloseHandle(broker_pi.hProcess); CloseHandle(broker_pi.hThread);
-    }
+    if (broker_up) stop_broker();
 
     const char* what = has_flag(argc, argv, "--find-config-key")  ? "recovered config key (network_engine.key)"
                      : has_flag(argc, argv, "--find-log-key")     ? "recovered debug-log key"

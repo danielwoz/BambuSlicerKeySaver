@@ -104,7 +104,9 @@ static bool gen_ctx() {
     X509_gmtime_adj(X509_get_notAfter(cert), 365L * 24 * 3600);
     X509_set_version(cert, 2);
     X509_set_pubkey(cert, pkey);
-    X509_NAME* name = X509_get_subject_name(cert);
+    // OpenSSL 3.x declares X509_get_subject_name() as returning const; the cert is
+    // ours and still being built, so taking a mutable handle to its name is safe.
+    X509_NAME* name = const_cast<X509_NAME*>(X509_get_subject_name(cert));
     // Bambu LAN printer certs use CN = device serial.
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
         (const unsigned char*)g_dev_id.c_str(), -1, -1, 0);
@@ -370,25 +372,32 @@ static void handle_client(SSL* ssl) {
     }
 }
 
-int main(int argc, char** argv) {
-    unsigned short port = 8883;
-    const char* cert_out = nullptr;
-    const char* key_out  = nullptr;
-    for (int i = 1; i + 1 < argc; ++i) {
-        if (!std::strcmp(argv[i], "--dev-id")) g_dev_id = argv[i + 1];
-        else if (!std::strcmp(argv[i], "--port")) port = (unsigned short)atoi(argv[i + 1]);
-        else if (!std::strcmp(argv[i], "--cert-out")) cert_out = argv[i + 1];
-        else if (!std::strcmp(argv[i], "--key-out"))  key_out  = argv[i + 1];
-    }
+namespace bbl_broker {
 
-    // If dev_id was not provided via command line, read from BambuStudio.conf.
-    if (g_dev_id.empty()) {
-        g_dev_id = read_dev_id_from_config();
-        if (!g_dev_id.empty())
-            std::fprintf(stderr, "[fake2] read dev_id from config: %s\n", g_dev_id.c_str());
-        else
-            std::fprintf(stderr, "[fake2] warning: no dev_id provided and none found in BambuStudio.conf\n");
-    }
+static SOCKET        s_srv  = INVALID_SOCKET;   // listen socket (closed by stop())
+static volatile bool s_stop = false;
+
+// Ask a running serve() loop to exit: raise the flag and unblock accept() by
+// closing the listen socket from the caller's (the host's) thread.
+void stop() {
+    s_stop = true;
+    SOCKET s = s_srv;
+    if (s != INVALID_SOCKET) closesocket(s);
+}
+
+// Run the fake TLS+MQTT printer broker on 127.0.0.1:<port> until stop() is
+// called. Writes the generated printer leaf cert to cert_out (the LAN device CA
+// the plugin checks the printer against) and, if key_out is non-null, the
+// matching private key. Returns 0 on clean shutdown, non-zero on setup failure.
+// Identical behaviour to the former standalone process, but callable in-process
+// so the host is a single self-contained binary (no fake_broker2.exe to ship).
+int serve(unsigned short port, const char* dev_id_arg,
+          const char* cert_out, const char* key_out) {
+    s_stop = false;
+    g_dev_id = (dev_id_arg && dev_id_arg[0]) ? std::string(dev_id_arg)
+                                             : read_dev_id_from_config();
+    if (g_dev_id.empty())
+        std::fprintf(stderr, "[fake2] warning: no dev_id provided and none found in BambuStudio.conf\n");
 
     g_real_report = load_file("BAMBU_FAKE_REPORT");
 
@@ -414,18 +423,18 @@ int main(int argc, char** argv) {
     InetPtonA(AF_INET, "127.0.0.1", &a.sin_addr);
     if (bind(srv, (sockaddr*)&a, sizeof(a)) != 0) {
         std::fprintf(stderr, "[fake2] bind 127.0.0.1:%u failed (err=%d)\n", port, WSAGetLastError());
-        return 1;
+        closesocket(srv); return 1;
     }
-    if (listen(srv, 4) != 0) { logln("listen failed"); return 1; }
+    if (listen(srv, 4) != 0) { logln("listen failed"); closesocket(srv); return 1; }
+    s_srv = srv;
 
     std::fprintf(stderr, "[fake2] READY dev_id=%s port=%u\n", g_dev_id.c_str(), port);
     std::fflush(stderr);
-    std::printf("READY\n"); std::fflush(stdout);
 
-    for (;;) {
+    while (!s_stop) {
         sockaddr_in peer{}; int plen = sizeof(peer);
         SOCKET c = accept(srv, (sockaddr*)&peer, &plen);
-        if (c == INVALID_SOCKET) break;
+        if (c == INVALID_SOCKET) break;   // stop() closed srv, or a real error
         SSL* ssl = SSL_new(g_ctx);
         SSL_set_fd(ssl, (int)c);
         if (SSL_accept(ssl) == 1) {
@@ -441,5 +450,29 @@ int main(int argc, char** argv) {
         SSL_free(ssl);
         closesocket(c);
     }
+    s_srv = INVALID_SOCKET;
+    closesocket(srv);
+    if (g_ctx) { SSL_CTX_free(g_ctx); g_ctx = nullptr; }
     return 0;
 }
+
+}  // namespace bbl_broker
+
+#ifdef BROKER_STANDALONE
+// Standalone process entry, retained for the win/broker build script. The
+// release build folds serve() into bambu_host instead (single binary), so this
+// is compiled only when BROKER_STANDALONE is defined.
+int main(int argc, char** argv) {
+    unsigned short port = 8883;
+    const char* cert_out = nullptr;
+    const char* key_out  = nullptr;
+    std::string dev_id;
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (!std::strcmp(argv[i], "--dev-id")) dev_id = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--port")) port = (unsigned short)atoi(argv[i + 1]);
+        else if (!std::strcmp(argv[i], "--cert-out")) cert_out = argv[i + 1];
+        else if (!std::strcmp(argv[i], "--key-out"))  key_out  = argv[i + 1];
+    }
+    return bbl_broker::serve(port, dev_id.c_str(), cert_out, key_out);
+}
+#endif
