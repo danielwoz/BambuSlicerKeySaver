@@ -18,9 +18,10 @@ endif()
 
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
+find_package(OpenSSL REQUIRED)
 # ---------------------------------------------------------------------------
 # keysaver_core: the OS-independent key-recovery core, compiled under MSVC.
-# Reconstruction needs no third-party libraries.
+# Reconstruction and PEM output use OpenSSL.
 # ---------------------------------------------------------------------------
 add_library(keysaver_core STATIC
   ${SRC}/reconstruct.cpp
@@ -28,6 +29,7 @@ add_library(keysaver_core STATIC
   ${SRC}/envelope.cpp
   ${SRC}/version.cpp
   ${SRC}/vendored/BigIntModExp.cpp
+  ${SRC}/output.cpp
 )
 target_include_directories(keysaver_core PUBLIC ${SRC})
 
@@ -40,6 +42,7 @@ target_include_directories(keysaver_core PUBLIC ${SRC})
 # ---------------------------------------------------------------------------
 add_executable(core_selftest core_selftest.cpp)
 target_link_libraries(core_selftest PRIVATE keysaver_core)
+target_compile_definitions(core_selftest PRIVATE HAVE_OPENSSL=1)
 
 # ---------------------------------------------------------------------------
 # Phase 1: minimal loader host + verification-faking shim (Windows only).
