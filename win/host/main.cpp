@@ -988,11 +988,12 @@ int run_auto_capture(int argc, char** argv, const std::string& ed, const Capture
     }
 
     // Printer-free fallback: if no printer was reachable (or the printer attempts
-    // did not land), drive the sign locally through the IN-PROCESS fake printer
-    // (flip-gate). No printer, no network, and no report file needed -- the broker
-    // synthesizes the status report. The capture is probabilistic, so retry across
-    // fresh processes with a generous scan budget. No BAMBU_FAKE_REPORT is set, so
-    // the worker's broker uses its synthesized report.
+    // did not land), drive the sign locally through the IN-PROCESS fake printer and
+    // recover the key with the SAME Montgomery-aware capture the printer path uses
+    // (--flip-known, not --flip-gate -- the latter's sweep does not land here). No
+    // printer, no network, and no report file needed -- the broker synthesizes the
+    // status report (no BAMBU_FAKE_REPORT set). The capture is probabilistic, so
+    // retry across fresh processes.
     if (!ok_slicer) {
         std::string dev_pf = bbl_config::detect_last_machine();
         std::fprintf(stderr, "[auto-capture] (4/4) %s; trying printer-free capture (fake printer)\n",
@@ -1006,7 +1007,7 @@ int run_auto_capture(int argc, char** argv, const std::string& ed, const Capture
                 + (dev_pf.empty() ? std::string() : (" --dev-id " + dev_pf))
                 + " --cert-dir \"" + cert + "\" --work-dir \"" + work + "\" --out \"" + out + "\""
                 + (have_diag ? (" --diag-known \"" + diag + "\"") : std::string())
-                + " --cloud-settle 4 --scan-passes 60 --scan-budget-ms 2000 --sign-sleep-ms 1 --flip-gate";
+                + " --cloud-settle 4 --scan-passes 60 --scan-budget-ms 2000 --sign-sleep-ms 1 --flip-known";
             { char sb[128]; std::snprintf(sb, sizeof sb,
                 "Capturing slicer RSA key without a printer (attempt %d/%d)…", i, max_runs);
               ui_status(sb); }
