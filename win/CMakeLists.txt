@@ -10,7 +10,9 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 if(MSVC)
-  add_compile_options(/EHsc /W3)
+  # /utf-8: treat sources as UTF-8 and use UTF-8 as the narrow execution charset,
+  # so the GUI's literal check/arrow glyphs and status text encode correctly.
+  add_compile_options(/EHsc /W3 /utf-8)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
 endif()
 
@@ -80,6 +82,7 @@ if(WIN32)
     host/lan_discover.cpp
     host/app_cert_fetch.cpp
     host/obn_http_winhttp.cpp
+    host/gui.cpp
     broker/fake_broker2.cpp
     ${OBN}/src/app_cert.cpp
     ${OBN}/src/json_lite.cpp
@@ -91,8 +94,14 @@ if(WIN32)
   target_compile_definitions(bambu_host PRIVATE OBN_VERSION_STRING="02.07.01.99")
   # OpenSSL::SSL (in addition to Crypto) for the in-process fake-printer broker's
   # TLS server; ncrypt/bcrypt for the native AES-key recovery; winhttp for the
-  # app-cert cloud fetch.
-  target_link_libraries(bambu_host PRIVATE verify_fake keysaver_core ws2_32 psapi bcrypt ncrypt OpenSSL::SSL OpenSSL::Crypto winhttp)
+  # app-cert cloud fetch; comctl32 for the GUI front-end's progress control.
+  target_link_libraries(bambu_host PRIVATE verify_fake keysaver_core ws2_32 psapi bcrypt ncrypt OpenSSL::SSL OpenSSL::Crypto winhttp comctl32)
+
+  # Ship as bambu_slicer_key_saver.exe. A bare double-click opens the GUI
+  # front-end (host/gui.cpp); command-line flags still drive the console tool and
+  # the spawned capture workers. Console subsystem is kept so those workers' stdio
+  # redirection keeps working; the GUI hides its own console when it owns one.
+  set_target_properties(bambu_host PROPERTIES OUTPUT_NAME bambu_slicer_key_saver)
 
   # Standalone AES-128-ECB decoder for the plugin's debug_network_*.log.enc
   # numeric log. Own main().

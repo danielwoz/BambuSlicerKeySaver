@@ -81,10 +81,11 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist/pkg | Out-Null
           $bin = "win/build/Release"
-          # The fake-printer broker is compiled into bambu_host (single binary),
-          # so there is no fake_broker2.exe to ship.
-          Copy-Item "$bin/bambu_host.exe" dist/pkg/ -ErrorAction SilentlyContinue
-          Copy-Item "$bin/declog.exe"     dist/pkg/ -ErrorAction SilentlyContinue
+          # Single binary: the fake-printer broker and the GUI front-end are both
+          # compiled into bambu_slicer_key_saver.exe (no fake_broker2.exe to ship).
+          Copy-Item "$bin/bambu_slicer_key_saver.exe" dist/pkg/ -ErrorAction SilentlyContinue
+          Copy-Item "$bin/declog.exe"                 dist/pkg/ -ErrorAction SilentlyContinue
+          Copy-Item "win/README-windows.txt"          dist/pkg/README.txt -ErrorAction SilentlyContinue
 
           # Bundle the OpenSSL runtime DLLs the host links (TLS for the in-process
           # broker + libcrypto) so it runs on a clean machine with no OpenSSL install.
@@ -99,7 +100,7 @@ jobs:
           }
 
           Write-Host "Package contents:"; Get-ChildItem dist/pkg | Format-Table Name,Length
-          if (-not (Test-Path dist/pkg/bambu_host.exe)) { throw "bambu_host.exe missing" }
+          if (-not (Test-Path dist/pkg/bambu_slicer_key_saver.exe)) { throw "bambu_slicer_key_saver.exe missing" }
           if (-not (Get-ChildItem dist/pkg/libssl-*-x64.dll)) { throw "OpenSSL libssl DLL missing" }
           Compress-Archive -Path dist/pkg/* -DestinationPath dist/bambu_slicer_key_saver-windows-x86_64.zip -Force
 

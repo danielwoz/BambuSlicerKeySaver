@@ -47,6 +47,7 @@
 #include "output.h"
 #include "reconstruct.h"
 #include "bigint.h"
+#include "host/capture_ui.h"
 
 using Slic3r::bambu::BambuNetworkingPluginHandle;
 using Slic3r::bambu::PluginHandleConfig;
@@ -804,10 +805,17 @@ static std::string parse_ascii_key(const std::string& path) {
 // debug-log AES keys (blind, from the running plugin), the cloud app cert (via
 // get_app_cert), and the slicer RSA key (live --flip-known capture against the
 // first reachable printer -- the key is per-installation, so one printer suffices).
-int run_auto_capture(int argc, char** argv, const std::string& ed) {
+int run_auto_capture(int argc, char** argv, const std::string& ed, const CaptureUI* ui) {
+    // Optional UI hooks (GUI); no-ops when ui is null (console).
+    auto ui_status = [&](const char* t) { if (ui && ui->on_status) ui->on_status(ui->ctx, t); };
+    auto ui_result = [&](const char* k, bool ok, const std::string& p) {
+        if (ui && ui->on_result) ui->on_result(ui->ctx, k, ok, ok ? p.c_str() : "");
+    };
     std::string plugin = resolve_plugin_path(argc, argv);
     if (plugin.empty() || !exists(plugin)) {
         std::fprintf(stderr, "[auto-capture] plugin not found (%s) -- is BambuStudio installed?\n", plugin.c_str());
+        ui_status("BambuStudio networking plugin not found. Is BambuStudio installed?");
+        if (ui && ui->on_done) ui->on_done(ui->ctx, 0);
         return 2;
     }
     char self[MAX_PATH] = {0};
@@ -832,6 +840,17 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
     for (const auto& p : printers)
         std::fprintf(stderr, "   %-15s %s '%s' access-code=%s\n", p.ip.c_str(), p.serial.c_str(),
                      p.name.c_str(), codes.count(p.serial) ? "found" : "MISSING");
+
+    // The slicer RSA key needs a Bambu printer reachable on the LAN; the other
+    // three keys do not. If none was found, warn and let the caller decide whether
+    // to continue with the remaining keys (GUI shows a confirmation dialog).
+    if (printers.empty() && ui && ui->confirm_no_printer) {
+        if (!ui->confirm_no_printer(ui->ctx)) {
+            std::fprintf(stderr, "[auto-capture] aborted: no LAN printer, user declined to continue\n");
+            if (ui->on_done) ui->on_done(ui->ctx, 0);
+            return 3;
+        }
+    }
 
     // Survival env inherited by every spawned worker.
     SetEnvironmentVariableA("BBL_BLOCK_WATCHDOG", "1");
@@ -863,8 +882,10 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
         std::string cmd = self_q + plug_q + " --work-dir \"" + work + "\""
             + " --cloud-settle 4 --find-config-key --out \"" + cfg_key_path + "\"";
         std::fprintf(stderr, "[auto-capture] (1/4) recovering config AES key (network_engine.key)...\n");
+        ui_status("Recovering config AES key (network_engine.key)…");
         run_worker_retry(cmd, work, work + "\\w.err", 120000, cfg_key_path, 3);
         ok_cfg = exists(cfg_key_path);
+        ui_result("Config AES key (network_engine.key)", ok_cfg, cfg_key_path);
     }
 
     // (2) debug-log AES key: recovered blind, printer-free, self-contained via the
@@ -880,14 +901,17 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
         std::string cmd = self_q + plug_q + " --work-dir \"" + work + "\""
             + " --cloud-settle 4" + logarg + " --key-out \"" + log_key_path + "\"";
         std::fprintf(stderr, "[auto-capture] (2/4) recovering debug-log AES key (embedded oracle)...\n");
+        ui_status("Recovering debug-log AES key…");
         run_worker_retry(cmd, work, work + "\\w.err", 120000, log_key_path, 3);
         ok_log = exists(log_key_path);
+        ui_result("Debug-log AES key", ok_log, log_key_path);
     }
 
     // (3) cloud app cert via get_app_cert: recover this account's app_identity
     // from the plugin heap (printer-free), then fetch the cert with the token
     // decrypted from the conf. BBL_APP_IDENTITY overrides the heap scan.
     {
+        ui_status("Fetching cloud app certificate…");
         std::string aid;
         if (const char* e = std::getenv("BBL_APP_IDENTITY")) if (e[0]) aid = e;
         if (aid.empty()) {
@@ -918,11 +942,13 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
                                                  appcert_dir.c_str(), "https://api.bambulab.com") == 0);
             }
         }
+        ui_result("Cloud app certificate", ok_cert, appcert_dir + "\\app_cert.pem");
     }
 
     // (4) slicer RSA key: live --flip-known capture against a LAN printer (each
     // attempt is a fresh process, so one landing suffices; the key is
     // per-installation, so any one reachable printer works).
+    ui_status("Capturing slicer RSA key (this is the slow step)…");
     if (printers.empty()) {
         std::fprintf(stderr, "[auto-capture] (4/4) no LAN printer found; skipping slicer-key capture "
                      "(is this PC on the printer's subnet?)\n");
@@ -947,6 +973,9 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
                     + " --cloud-settle 6 --scan-passes 50 --scan-budget-ms 2000 --sign-sleep-ms 1 --flip-known";
                 std::fprintf(stderr, "[auto-capture] (4/4) capture %s (%s) attempt %d/%d\n",
                              p.name.c_str(), p.ip.c_str(), i, max_runs);
+                { char sb[160]; std::snprintf(sb, sizeof sb,
+                    "Capturing slicer RSA key from %s (attempt %d/%d)…", p.name.c_str(), i, max_runs);
+                  ui_status(sb); }
                 run_worker(cmd, work, work + "\\cap.err", 180000, out);
                 if (exists(out)) {
                     CopyFileA(out.c_str(), out_final.c_str(), FALSE);
@@ -960,6 +989,7 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
             }
         }
     }
+    ui_result("Slicer RSA key", ok_slicer, out_final);
 
     kill_by_name("fake_broker2.exe");
     std::fprintf(stderr,
@@ -975,6 +1005,7 @@ int run_auto_capture(int argc, char** argv, const std::string& ed) {
         ok_cert   ? "OK (appcert_out\\app_cert.pem)" : "MISSING");
     int have = (int)ok_slicer + (int)ok_cfg + (int)ok_log + (int)ok_cert;
     std::fprintf(stderr, "[auto-capture] %d/4 artifacts produced\n", have);
+    if (ui && ui->on_done) ui->on_done(ui->ctx, have);
     return (have == 4) ? 0 : 1;
 }
 
@@ -1190,7 +1221,23 @@ int run_from_disk(const char* pem_path, const std::vector<Envelope>& envs, const
 
 }  // namespace
 
+// External entry point for the GUI front-end (win/host/gui.cpp, a separate TU):
+// run the full 4-artifact auto-capture with UI callbacks. Defined here so it can
+// reach run_auto_capture()/exe_dir() (internal linkage) from within this TU.
+int run_capture_with_ui(const CaptureUI* ui) {
+    std::string ed = exe_dir();
+    char a0[] = "bambu_slicer_key_saver";
+    char a1[] = "--auto-capture";
+    char* argv[] = { a0, a1, nullptr };
+    return run_auto_capture(2, argv, ed, ui);
+}
+
 int main(int argc, char** argv) {
+    // Bare launch (double-click, no arguments) -> the friendly GUI, which runs the
+    // full auto-capture and shows a spinner + a per-key success line, hiding the
+    // console log. Any argument (a mode flag, or a spawned worker) uses the CLI.
+    if (argc == 1) { extern int run_gui(); return run_gui(); }
+
     const char* out      = arg_value(argc, argv, "--out", "slicer_key_windows.txt");
     const char* dev_id   = arg_value(argc, argv, "--dev-id", "");
     // Auto-detect the device id from BambuStudio.conf when --dev-id is not given,
@@ -1260,7 +1307,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (has_flag(argc, argv, "--auto")) return run_auto(argc, argv, ed);
-    if (has_flag(argc, argv, "--auto-capture")) return run_auto_capture(argc, argv, ed);
+    if (has_flag(argc, argv, "--auto-capture")) return run_auto_capture(argc, argv, ed, nullptr);
     if (has_flag(argc, argv, "--get-app-cert")) {
         // Retrieve the Studio app cert from Bambu's cloud (no plugin needed): decrypt
         // the token from BambuNetworkEngine.conf and call obn::appcert::fetch. The
