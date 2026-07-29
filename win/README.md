@@ -23,9 +23,15 @@ plugin's AES configuration- and log-file keys.
 
 ## Build
 
-Requires Visual Studio 2022+ (MSVC), CMake, and Ninja. OpenSSL is optional and
-not needed for reconstruction.
+Requires Visual Studio 2022+ (MSVC) with the "Desktop development with C++" workload and the vcpkg individual component. This will auto include CMake that we require, you must also install Ninja somewhere in your path (https://github.com/ninja-build/ninja/releases).  OpenSSL is required for
+building, but will automatically be installed using visual studios vcpkg if not
+found.
 
+### Auto Build Script
+Run `./win/build_main.bat full ./win/build` to configure and build the project. It always builds
+release a Debug build runs the big-integer factor recovery roughly 10× slower.
+
+### Manual Building
 From a Developer prompt (or after sourcing `vcvars64.bat`):
 
 ```sh
